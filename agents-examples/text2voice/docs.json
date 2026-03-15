@@ -1,0 +1,29 @@
+{
+  "name": "Text2Voice Agent",
+  "description": "Converts English text to speech (WAV base64)",
+  "capabilities": {
+    "text2voice": {
+      "description": "Synthesize English speech from text",
+      "input": {
+        "text": {
+          "type": "string",
+          "description": "Text to synthesize"
+        },
+        "rate": {
+          "type": "number",
+          "description": "Speech rate in words per minute (optional, 80-300)"
+        }
+      },
+      "output": {
+        "audio_base64": {
+          "type": "string",
+          "description": "WAV audio encoded as base64"
+        },
+        "format": {
+          "type": "string",
+          "description": "Audio format, always 'wav'"
+        }
+      }
+    }
+  }
+}
