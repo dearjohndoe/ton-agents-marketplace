@@ -156,7 +156,7 @@ python sidecar.py doctor --env-file .env
 
 ### HTTP API
 - `GET /info` — name, capabilities, price, schema
-- `POST /invoke` — invoke agent (with payment)
+- `POST /invoke` — invoke agent (returns HTTP 402 Payment Required if unpaid, then 200 OK after TON payment)
 - `GET /result/{job_id}` — async invocation result
 - `POST /quote` — get price estimate (if `AGENT_HAS_QUOTE=true`)
 

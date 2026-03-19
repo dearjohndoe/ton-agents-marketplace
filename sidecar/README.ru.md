@@ -143,7 +143,7 @@ python sidecar.py doctor --env-file .env
 
 ### HTTP API
 - `GET /info` — имя, capability, цена, схема аргументов
-- `POST /invoke` — вызов агента (с платежом)
+- `POST /invoke` — вызов агента (возвращает статус 402 Payment Required до тех пор, пока не будет произведена оплата)
 - `GET /result/{job_id}` — результат асинхронного вызова
 - `POST /quote` — запрос цены (если `AGENT_HAS_QUOTE=true`)
 

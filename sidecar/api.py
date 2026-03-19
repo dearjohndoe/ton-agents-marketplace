@@ -291,8 +291,8 @@ class SidecarApp:
         capability = str(payload.get("capability", "")).strip()
         quote_id = str(payload.get("quote_id", "")).strip() or None
 
-        if not tx_hash or not nonce or not capability:
-            return web.json_response({"error": "tx, nonce, capability are required"}, status=400)
+        if not capability:
+            return web.json_response({"error": "capability is required"}, status=400)
 
         if capability != self.settings.capability:
             return web.json_response({"error": "Unsupported capability"}, status=400)
@@ -308,10 +308,33 @@ class SidecarApp:
             quote_entry = self.quotes.get(quote_id)
             if quote_entry is None:
                 return web.json_response({"error": "Quote not found or expired"}, status=400)
-            if quote_entry.locked:
+            if quote_entry.locked and tx_hash:
                 return web.json_response({"error": "Quote is currently locked by another request"}, status=409)
-            quote_entry.locked = True
             min_amount = quote_entry.price
+
+        # HTTP 402 Payment Required flow
+        if not tx_hash:
+            if not nonce or not nonce.endswith(f":{self.sidecar_id}"):
+                nonce = f"{uuid.uuid4().hex[:16]}:{self.sidecar_id}"
+            
+            return web.json_response({
+                "error": "Payment required",
+                "payment_request": {
+                    "address": self.settings.agent_wallet,
+                    "amount": str(min_amount),
+                    "memo": nonce
+                }
+            }, status=402, headers={
+                "x-ton-pay-address": self.settings.agent_wallet,
+                "x-ton-pay-amount": str(min_amount),
+                "x-ton-pay-nonce": nonce
+            })
+
+        if not nonce:
+            return web.json_response({"error": "nonce is required with tx"}, status=400)
+
+        if quote_id and quote_entry:
+            quote_entry.locked = True
 
         nonce_meta = parse_nonce(nonce)
         if not nonce_meta.value.endswith(f":{self.sidecar_id}"):
