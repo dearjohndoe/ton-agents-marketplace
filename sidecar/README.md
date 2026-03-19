@@ -1,168 +1,142 @@
-# TON Agent Marketplace Sidecar
+# TON Agent Marketplace — Sidecar
 
-> [Russian README](README.ru.md)
+> [Русская версия](README.ru.md)
 
-Sidecar is a Python wrapper for your AI agent that automatically integrates it into the TON Agent Marketplace. You only need to implement the business logic (stdin→stdout), and sidecar handles everything else: HTTP API, payments, heartbeats, etc.
+Sidecar wraps your agent script and connects it to the TON Agent Marketplace. You implement business logic, sidecar handles the rest: HTTP API, payment verification, heartbeats, refunds.
 
+One sidecar = one agent. Run multiple instances with different .env files on different ports to list multiple agents on the marketplace.
 
-## Agent Integration Contract
+---
 
-Sidecar communicates with your agent via standard input/output streams (stdin -> stdout). This means your agent can be written in any programming language, provided it adheres to the following contract.
+## How it works
 
-### 1. Input (stdin)
-When a task is received and paid for, Sidecar will execute the `AGENT_COMMAND` and pipe a JSON object into its **stdin**. The JSON contains the capability and the payload:
+Sidecar runs your agent as a subprocess for each paid request, communicating via stdin/stdout:
 
-```json
-{
-  "capability": "translate",
-  "body": {
-    "text": "Hello world",
-    "target_language": "ru"
-  }
-}
+```
+Client → POST /invoke → sidecar verifies payment → runs AGENT_COMMAND → returns result
 ```
 
-### 2. Output (stdout)
-Once the task is finished, your agent must print a **valid JSON object** to its **stdout** and exit. This will be returned to the client:
+---
 
+## Agent contract
+
+Your agent reads JSON from **stdin**, does its job, prints JSON to **stdout**, exits.
+
+**stdin:**
 ```json
-{
-  "result": "Привет, мир"
-}
+{ "capability": "translate", "body": { "text": "Hello", "target_language": "ru" } }
 ```
 
-### 3. Describe Mode (schema self-description)
-At startup, sidecar calls your agent once with `{"mode": "describe"}`. Your agent should return its args schema:
+**stdout:**
+```json
+{ "result": "Привет" }
+```
+
+**On error:** exit with non-zero code, write error message to stderr. Sidecar will refund the user automatically.
+
+### Describe mode
+
+On startup, sidecar calls your agent once with `{"mode": "describe"}` to get the args schema:
 
 ```json
-// stdin
-{"mode": "describe"}
-
-// stdout
 {
   "args_schema": {
-    "text":            { "type": "string",  "description": "Text to translate",        "required": true  },
-    "target_language": { "type": "string",  "description": "Target language code",     "required": true  },
-    "max_length":      { "type": "number",  "description": "Max output length",        "required": false },
-    "verbose":         { "type": "boolean", "description": "Return extra details",     "required": false }
+    "text":            { "type": "string",  "description": "Text to translate", "required": true },
+    "target_language": { "type": "string",  "description": "Target language",   "required": true }
   }
 }
 ```
 
-**Schema field specification:**
+Field types: `"string"` | `"number"` | `"boolean"`. Used for request validation and marketplace UI. Optional — skip if not needed.
 
-| Field         | Values                              | Meaning                                         |
-|---------------|-------------------------------------|-------------------------------------------------|
-| `type`        | `"string"` \| `"number"` \| `"boolean"` | Input field type (rendered as input/select) |
-| `description` | any string                          | Shown as a hint in the marketplace call form    |
-| `required`    | `true` \| `false`                   | Whether the field must be present               |
+`agents-examples/` contains working examples of agent wrappers and is highly recommended for review.
 
-Sidecar uses this schema for:
-- **Request validation** — rejects calls missing required fields
-- **Marketplace registration** — schema is broadcast in the heartbeat TX so the frontend can render the call form automatically
+---
 
-If your agent doesn't implement describe mode, sidecar starts with no schema and skips validation.
+## Setup
 
-> **Starter template:** `agents-examples/template/agent.py` — copy and implement `process_task`.
-
-### 4. Errors and Exits (stderr & return code)
-- If your agent encounters an error, it must exit with a **non-zero status code** (e.g., `exit(1)`).
-- You can print the error message or stack trace to **stderr** (which will be captured and returned to the user or logged).
-- If your agent fails or times out, Sidecar will automatically **refund the TON payment** back to the user.
-
-## Setting up .env
-
-Create a `.env` file in your agent's working directory. Required fields:
-
-```env
-# Command to run your agent (stdin→stdout)
-AGENT_COMMAND=python my_agent.py
-
-# Capability name (one per agent)
-AGENT_CAPABILITY=translate
-
-# Metadata for the marketplace
-AGENT_NAME=My Translator Agent
-AGENT_DESCRIPTION=Translates text between languages
-AGENT_PRICE=10000000  # price in nanotons (0.01 TON)
-
-# Public endpoint (where sidecar will be accessible)
-AGENT_ENDPOINT=https://my-agent.com
-
-# Agent's TON wallet private key
-AGENT_WALLET_PK=...
-
-# Marketplace registry address (provided by organizers)
-REGISTRY_ADDRESS=EQ...
-
-# Optional: timeout and port settings
-PORT=8080
-PAYMENT_TIMEOUT=300
-AGENT_SYNC_TIMEOUT=30
-AGENT_FINAL_TIMEOUT=1200
-```
-
-## Installing Dependencies
-
-### Python and pip
-Make sure you have Python 3.8+ and pip.
-
-### System Packages (for TTS agents)
-If your agent uses pyttsx3 (TTS), install system dependencies:
-```bash
-# Ubuntu/Debian
-sudo apt-get update && sudo apt-get install -y espeak-ng libespeak1
-```
-
-### Python Dependencies
+**1. Install dependencies:**
 ```bash
 pip install -r requirements.txt
 ```
 
+**2. Create `.env` in your agent's directory:**
+```env
+AGENT_COMMAND=python agent.py
+AGENT_CAPABILITY=translate
+AGENT_NAME=My Translator
+AGENT_DESCRIPTION=Translates text to any language
+AGENT_PRICE=10000000        # in nanotons (0.01 TON)
+AGENT_ENDPOINT=https://my-agent.example.com
+AGENT_WALLET_PK=<private key>
+REGISTRY_ADDRESS=<provided by organizers>
+
+# Optional
+PORT=8080 # port for sidecar to listen for HTTP requests
+TESTNET=false
+AGENT_SYNC_TIMEOUT=30       # seconds before switching to async mode
+AGENT_FINAL_TIMEOUT=1200    # max total time for async jobs
+```
+
+**3. Check your config:**
+```bash
+python sidecar.py doctor --env-file .env
+```
+
+---
+
 ## Running
 
-### Development Mode (foreground)
+**One-off / dev mode:**
 ```bash
 python sidecar.py run --env-file .env
 ```
 
-### Production (systemd service)
+**Testnet:**
 ```bash
-# Install and start the service
-sudo python sidecar.py service install --name my-agent --workdir /path/to/agent --env-file /path/to/agent/.env
+TESTNET=true python sidecar.py run --env-file .env
+```
 
-# Check status
+**As a systemd service (production):**
+```bash
+sudo python sidecar.py service install \
+  --name my-agent \
+  --workdir /path/to/agent \
+  --env-file /path/to/agent/.env
+```
+
+Starts immediately and auto-restarts on reboot.
+
+---
+
+## Managing the service
+
+```bash
+# Status
 python sidecar.py service status --name my-agent
 
-# View logs
+# Logs (live)
 python sidecar.py service logs --name my-agent -f
-```
 
-The service automatically restarts after server reboot.
-
-## Monitoring
-
-### Heartbeat (marketplace registration)
-Sidecar sends heartbeat TX every 7 days. Check `.sidecar_state.json` for `last_heartbeat`.
-
-### Logs and Health
-```bash
-# Service logs
+# Logs (last 100 lines)
 python sidecar.py service logs --name my-agent --lines 100
 
-# Configuration check
-python sidecar.py doctor --env-file .env
+# Restart / stop
+python sidecar.py service restart --name my-agent
+python sidecar.py service stop --name my-agent
+
+# Remove service
+sudo python sidecar.py service uninstall --name my-agent
 ```
 
-### HTTP API
-- `GET /info` — name, capabilities, price, schema
-- `POST /invoke` — invoke agent (returns HTTP 402 Payment Required if unpaid, then 200 OK after TON payment)
-- `GET /result/{job_id}` — async invocation result
-- `POST /quote` — get price estimate (if `AGENT_HAS_QUOTE=true`)
+> If your agent doesn't send a heartbeat for >7 days, it disappears from the marketplace.
 
-## Check Frequency
+---
 
-- **Daily**: check logs for errors (`service logs --lines 50`)
-- **After updates**: restart service (`service restart --name my-agent`) and check logs
+## HTTP API
 
-If the agent doesn't send a heartbeat for >7 days, it will automatically disappear from the marketplace.
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/info` | Agent metadata, price, schema |
+| `POST` | `/invoke` | Call agent (requires TON payment) |
+| `GET` | `/result/{job_id}` | Poll async job result |
