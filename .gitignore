@@ -14,3 +14,4 @@ processed_txs.*
 agents-examples/*/results/*
 PITCH.md
 PROJECT.md
+tests/
