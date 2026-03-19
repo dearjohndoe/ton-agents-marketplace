@@ -7,6 +7,21 @@ import tempfile
 import time
 from pathlib import Path
 
+CAPABILITY = "text2voice"
+
+ARGS_SCHEMA: dict = {
+    "text": {
+        "type": "string",
+        "description": "Text to synthesize",
+        "required": True,
+    },
+    "rate": {
+        "type": "number",
+        "description": "Speech rate in words per minute (80–300, optional)",
+        "required": False,
+    },
+}
+
 
 def pick_english_voice(engine) -> str | None:
     for voice in engine.getProperty("voices"):
@@ -56,11 +71,14 @@ def synthesize_to_wav_base64(text: str, rate: int | None = None) -> str:
 
 
 def process_task(task: dict) -> dict:
-    capability = task.get("capability")
-    body = task.get("body") or {}
+    if task.get("mode") == "describe":
+        return {"args_schema": ARGS_SCHEMA}
 
-    if capability != "text2voice":
-        raise ValueError("Unsupported capability")
+    capability = task.get("capability")
+    if capability != CAPABILITY:
+        raise ValueError(f"Unsupported capability: {capability!r}")
+
+    body = task.get("body") or {}
 
     text = body.get("text")
     if not isinstance(text, str) or not text.strip():
@@ -74,12 +92,7 @@ def process_task(task: dict) -> dict:
             raise ValueError("body.rate must be a number") from exc
 
     audio_b64 = synthesize_to_wav_base64(text.strip(), rate)
-    return {
-        "result": {
-            "audio_base64": audio_b64,
-            "format": "wav",
-        }
-    }
+    return {"result": {"audio_base64": audio_b64, "format": "wav"}}
 
 
 def main() -> None:
@@ -89,4 +102,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)

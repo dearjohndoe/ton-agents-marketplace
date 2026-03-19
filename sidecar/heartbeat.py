@@ -7,8 +7,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
-from storage import SidecarState, StateStore
+from pytoniq_core import Cell
 
+from storage import SidecarState, StateStore
+from transfer import TransferFn, heartbeat_body
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +21,11 @@ class HeartbeatConfig:
     endpoint: str
     price: int
     capability: str
-    docs_bag_id: str | None
+    name: str
+    description: str
+    args_schema: dict[str, Any]
+    has_quote: bool = False
+    sidecar_id: str | None = None
 
 
 class HeartbeatManager:
@@ -27,7 +33,7 @@ class HeartbeatManager:
         self,
         config: HeartbeatConfig,
         state_store: StateStore,
-        transfer_sender: Callable[[str, int, str], Awaitable[str]],
+        transfer_sender: TransferFn,
         heartbeat_interval_days: int = 7,
         immediate_threshold_days: int = 6,
     ) -> None:
@@ -38,12 +44,19 @@ class HeartbeatManager:
         self._immediate_threshold = timedelta(days=immediate_threshold_days)
 
     def _build_payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
+            "name": self._config.name,
+            "description": self._config.description,
             "capabilities": [self._config.capability],
             "price": self._config.price,
             "endpoint": self._config.endpoint,
-            "docs_bag_id": self._config.docs_bag_id,
+            "args_schema": self._config.args_schema,
         }
+        if self._config.has_quote:
+            payload["has_quote"] = True
+        if self._config.sidecar_id:
+            payload["sidecar_id"] = self._config.sidecar_id
+        return payload
 
     def _should_send_now(self, state: SidecarState) -> bool:
         if not state.last_heartbeat:
@@ -61,7 +74,8 @@ class HeartbeatManager:
 
         payload = self._build_payload()
         payload_json = json.dumps(payload, ensure_ascii=False)
-        await self._transfer_sender(self._config.registry_address, 10_000_000, payload_json)
+        body = heartbeat_body(payload_json)
+        await self._transfer_sender(self._config.registry_address, 10_000_000, body)
 
         state.last_heartbeat = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         self._state_store.save(state)

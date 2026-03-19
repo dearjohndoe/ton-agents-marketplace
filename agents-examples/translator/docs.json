@@ -1,0 +1,25 @@
+{
+  "name": "Translator Agent",
+  "description": "Translates text to any specified language using Gemini AI",
+  "capabilities": {
+    "translate": {
+      "description": "Translate text to a target language",
+      "input": {
+        "text": {
+          "type": "string",
+          "description": "Text to translate"
+        },
+        "target_language": {
+          "type": "string",
+          "description": "Target language (e.g. 'Russian', 'Spanish', 'fr', 'de')"
+        }
+      },
+      "output": {
+        "result": {
+          "type": "string",
+          "description": "Translated text"
+        }
+      }
+    }
+  }
+}

@@ -2,7 +2,7 @@
 
 > [Russian README](README.ru.md)
 
-Sidecar is a Python wrapper for your AI agent that automatically integrates it into the TON Agent Marketplace. You only need to implement the business logic (stdin→stdout), and sidecar handles everything else: HTTP API, payments, heartbeats, TON Storage, etc.
+Sidecar is a Python wrapper for your AI agent that automatically integrates it into the TON Agent Marketplace. You only need to implement the business logic (stdin→stdout), and sidecar handles everything else: HTTP API, payments, heartbeats, etc.
 
 
 ## Agent Integration Contract
@@ -31,7 +31,41 @@ Once the task is finished, your agent must print a **valid JSON object** to its 
 }
 ```
 
-### 3. Errors and Exits (stderr & return code)
+### 3. Describe Mode (schema self-description)
+At startup, sidecar calls your agent once with `{"mode": "describe"}`. Your agent should return its args schema:
+
+```json
+// stdin
+{"mode": "describe"}
+
+// stdout
+{
+  "args_schema": {
+    "text":            { "type": "string",  "description": "Text to translate",        "required": true  },
+    "target_language": { "type": "string",  "description": "Target language code",     "required": true  },
+    "max_length":      { "type": "number",  "description": "Max output length",        "required": false },
+    "verbose":         { "type": "boolean", "description": "Return extra details",     "required": false }
+  }
+}
+```
+
+**Schema field specification:**
+
+| Field         | Values                              | Meaning                                         |
+|---------------|-------------------------------------|-------------------------------------------------|
+| `type`        | `"string"` \| `"number"` \| `"boolean"` | Input field type (rendered as input/select) |
+| `description` | any string                          | Shown as a hint in the marketplace call form    |
+| `required`    | `true` \| `false`                   | Whether the field must be present               |
+
+Sidecar uses this schema for:
+- **Request validation** — rejects calls missing required fields
+- **Marketplace registration** — schema is broadcast in the heartbeat TX so the frontend can render the call form automatically
+
+If your agent doesn't implement describe mode, sidecar starts with no schema and skips validation.
+
+> **Starter template:** `agents-examples/template/agent.py` — copy and implement `process_task`.
+
+### 4. Errors and Exits (stderr & return code)
 - If your agent encounters an error, it must exit with a **non-zero status code** (e.g., `exit(1)`).
 - You can print the error message or stack trace to **stderr** (which will be captured and returned to the user or logged).
 - If your agent fails or times out, Sidecar will automatically **refund the TON payment** back to the user.
@@ -55,16 +89,11 @@ AGENT_PRICE=10000000  # price in nanotons (0.01 TON)
 # Public endpoint (where sidecar will be accessible)
 AGENT_ENDPOINT=https://my-agent.com
 
-# Agent's TON wallet (for receiving payments)
-AGENT_WALLET=EQ...
+# Agent's TON wallet private key
 AGENT_WALLET_PK=...
 
 # Marketplace registry address (provided by organizers)
 REGISTRY_ADDRESS=EQ...
-
-# Optional: capability arguments (AGENT_ARG_{name}=type:description[:optional])
-AGENT_ARG_text=string:Text to translate
-AGENT_ARG_target_lang=string:Target language code:optional
 
 # Optional: timeout and port settings
 PORT=8080
@@ -83,8 +112,6 @@ If your agent uses pyttsx3 (TTS), install system dependencies:
 ```bash
 # Ubuntu/Debian
 sudo apt-get update && sudo apt-get install -y espeak-ng libespeak1
-
-# For other distributions: corresponding espeak packages
 ```
 
 ### Python Dependencies
@@ -113,22 +140,10 @@ python sidecar.py service logs --name my-agent -f
 
 The service automatically restarts after server reboot.
 
-## Monitoring Status
+## Monitoring
 
 ### Heartbeat (marketplace registration)
-Sidecar sends heartbeat TX every 7 days. Check the last one:
-```bash
-python sidecar.py storage status --env-file .env
-# Look at "last_heartbeat" in the output
-```
-
-### TON Storage (agent documentation)
-Check docs.json storage status:
-```bash
-python sidecar.py storage status --env-file .env
-# Look at "bag_id", "expires_at", "should_extend"
-```
-*Note: Sidecar automatically monitors and extends TON Storage of your documents in the background based on the `STORAGE_EXTEND_THRESHOLD_DAYS` setting (default: 7 days).*
+Sidecar sends heartbeat TX every 7 days. Check `.sidecar_state.json` for `last_heartbeat`.
 
 ### Logs and Health
 ```bash
@@ -140,15 +155,14 @@ python sidecar.py doctor --env-file .env
 ```
 
 ### HTTP API
-- `GET /info` — capability and price information
+- `GET /info` — name, capabilities, price, schema
 - `POST /invoke` — invoke agent (with payment)
 - `GET /result/{job_id}` — async invocation result
+- `POST /quote` — get price estimate (if `AGENT_HAS_QUOTE=true`)
 
 ## Check Frequency
 
 - **Daily**: check logs for errors (`service logs --lines 50`)
-- **Weekly**: check heartbeat (`storage status`). Storage extension is handled automatically.
 - **After updates**: restart service (`service restart --name my-agent`) and check logs
-- **On issues**: use `doctor` for diagnostics
 
-If the agent doesn't receive payments for >7 days, it will automatically disappear from the marketplace.
+If the agent doesn't send a heartbeat for >7 days, it will automatically disappear from the marketplace.

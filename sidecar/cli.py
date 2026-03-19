@@ -12,98 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from api import SidecarApp
-from storage import StateStore, TonStorageClient, parse_storage_expiry, should_extend_storage
 from settings import Settings, load_settings
 
 logger = logging.getLogger("sidecar")
-
-async def handle_storage_status(settings: Settings) -> int:
-    state_store = StateStore(settings.state_path)
-    storage = TonStorageClient(settings.ton_storage_base_url, settings.ton_storage_session)
-    try:
-        state = state_store.load()
-        if not state.bag_id:
-            print(json.dumps({"bag_id": None, "status": "missing"}, ensure_ascii=False))
-            return 1
-
-        details = await storage.get_details(state.bag_id)
-        expires_at = parse_storage_expiry(details)
-        if expires_at:
-            state.storage_expires = expires_at
-            state_store.save(state)
-
-        print(
-            json.dumps(
-                {
-                    "bag_id": state.bag_id,
-                    "expires_at": expires_at,
-                    "should_extend": should_extend_storage(
-                        expires_at,
-                        threshold_days=settings.storage_extend_threshold_days,
-                    ),
-                },
-                ensure_ascii=False,
-            )
-        )
-        return 0
-    finally:
-        await storage.close()
-
-
-async def handle_extend_storage(settings: Settings) -> int:
-    state_store = StateStore(settings.state_path)
-    storage = TonStorageClient(settings.ton_storage_base_url, settings.ton_storage_session)
-    try:
-        state = state_store.load()
-        if not state.bag_id:
-            print("No bag_id in state")
-            return 1
-
-        response = await storage.extend_storage(state.bag_id)
-        print(json.dumps(response, ensure_ascii=False))
-        return 0
-    finally:
-        await storage.close()
-
-
-async def handle_update_docs(settings: Settings) -> int:
-    if not settings.ton_storage_session:
-        print("TON_STORAGE_SESSION is required for docs upload")
-        return 1
-
-    docs_payload = generate_docs(settings)
-    write_docs_file(settings.docs_path, docs_payload)
-
-    state_store = StateStore(settings.state_path)
-    storage = TonStorageClient(settings.ton_storage_base_url, settings.ton_storage_session)
-    try:
-        bag_id = await storage.upload_docs(settings.docs_path, description=settings.agent_name)
-        state = state_store.load()
-        state.bag_id = bag_id
-        state_store.save(state)
-        print(json.dumps({"bag_id": bag_id}, ensure_ascii=False))
-        return 0
-    finally:
-        await storage.close()
-
-
-async def handle_stop_storage(settings: Settings) -> int:
-    state_store = StateStore(settings.state_path)
-    storage = TonStorageClient(settings.ton_storage_base_url, settings.ton_storage_session)
-    try:
-        state = state_store.load()
-        if not state.bag_id:
-            print("No bag_id in state")
-            return 1
-
-        await storage.stop_storage(state.bag_id)
-        state.bag_id = None
-        state.storage_expires = None
-        state_store.save(state)
-        print(json.dumps({"stopped": True}, ensure_ascii=False))
-        return 0
-    finally:
-        await storage.close()
 
 
 async def run_server(settings: Settings) -> int:
@@ -257,16 +168,9 @@ def parse_cli_args() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argume
 
     run_parser = subparsers.add_parser("run", help="Run sidecar HTTP server")
     run_parser.add_argument("--env-file", default=".env", help="Path to .env file")
+    run_parser.add_argument("--force-heartbeat", action="store_true",
+                            help="Clear last_heartbeat state so a fresh heartbeat is sent on startup")
     parser_map["run"] = run_parser
-
-    storage_parser = subparsers.add_parser("storage", help="TON Storage operations")
-    storage_parser.add_argument("--env-file", default=".env", help="Path to .env file")
-    storage_sub = storage_parser.add_subparsers(dest="storage_command", required=True)
-    storage_sub.add_parser("status", help="Show storage status")
-    storage_sub.add_parser("extend", help="Extend storage duration")
-    storage_sub.add_parser("update-docs", help="Re-upload docs and update bag_id")
-    storage_sub.add_parser("stop", help="Stop storage for current bag")
-    parser_map["storage"] = storage_parser
 
     service_parser = subparsers.add_parser("service", help="Manage systemd service")
     service_parser.add_argument("--name", default="sidecar", help="Service name without .service")
@@ -293,7 +197,7 @@ def parse_cli_args() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argume
     parser_map["doctor"] = doctor_parser
 
     help_parser = subparsers.add_parser("help", help="Show help")
-    help_parser.add_argument("topic", nargs="?", choices=["run", "storage", "service", "doctor"], help="Help topic")
+    help_parser.add_argument("topic", nargs="?", choices=["run", "service", "doctor"], help="Help topic")
     parser_map["help"] = help_parser
 
     args = parser.parse_args()
@@ -308,20 +212,14 @@ async def async_main() -> int:
     if args.command in {None, "run"}:
         env_file = getattr(args, "env_file", ".env")
         settings = load_settings(env_file)
+        if getattr(args, "force_heartbeat", False):
+            from storage import StateStore
+            store = StateStore(settings.state_path)
+            state = store.load()
+            state.last_heartbeat = None
+            store.save(state)
+            logger.info("Cleared last_heartbeat — fresh heartbeat will be sent on startup")
         return await run_server(settings)
-
-    if args.command == "storage":
-        settings = load_settings(args.env_file)
-        if args.storage_command == "status":
-            return await handle_storage_status(settings)
-        if args.storage_command == "extend":
-            return await handle_extend_storage(settings)
-        if args.storage_command == "update-docs":
-            return await handle_update_docs(settings)
-        if args.storage_command == "stop":
-            return await handle_stop_storage(settings)
-        print("Unknown storage command")
-        return 1
 
     if args.command == "service":
         return handle_service_command(args)
@@ -341,7 +239,10 @@ async def async_main() -> int:
 
 
 def main() -> None:
-    raise SystemExit(asyncio.run(async_main()))
+    try:
+        raise SystemExit(asyncio.run(async_main()))
+    except KeyboardInterrupt:
+        sys.exit(130)
 
 
 if __name__ == "__main__":

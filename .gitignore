@@ -1,2 +1,16 @@
-*.venv
+.venv
+venv
 __pycache__
+*.env
+*.env.test
+logs.txt
+test-agents
+SPEC.md
+CONTEXT.md
+*/node_modules
+*/dist
+*.sidecar_state.*
+processed_txs.*
+agents-examples/*/results/*
+PITCH.md
+PROJECT.md
