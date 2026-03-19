@@ -1,11 +1,8 @@
-from __future__ import annotations
-
 import base64
 import json
 import os
 import sys
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -13,14 +10,8 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
 RESULTS_DIR = Path(__file__).parent / "results"
-LOG_FILE = Path(__file__).parent / "logs.txt"
 
-# imagen-4 pricing (USD per image)
-PRICE_PER_IMAGE = 0.04
-
-CAPABILITY = "imagegen"
-
-ARGS_SCHEMA: dict = {
+ARGS_SCHEMA = {
     "prompt": {
         "type": "string",
         "description": "Text description of the image to generate",
@@ -29,21 +20,21 @@ ARGS_SCHEMA: dict = {
 }
 
 
-def append_log(entry: dict) -> None:
-    with LOG_FILE.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+def main():
+    task = json.load(sys.stdin)
 
+    if task.get("mode") == "describe":
+        print(json.dumps({"args_schema": ARGS_SCHEMA}))
+        return
 
-def generate_image(prompt: str) -> str:
-    """Generate image and return base64-encoded PNG."""
+    prompt = (task.get("body") or {}).get("prompt", "").strip()
+    if not prompt:
+        raise ValueError("body.prompt must be a non-empty string")
+
     from google import genai
     from google.genai import types
 
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY environment variable is not set")
-
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     response = client.models.generate_images(
         model="imagen-4.0-generate-001",
         prompt=prompt,
@@ -51,44 +42,10 @@ def generate_image(prompt: str) -> str:
     )
     image_bytes = response.generated_images[0].image.image_bytes
 
-    # Save locally for debugging / caching
     RESULTS_DIR.mkdir(exist_ok=True)
-    output_path = RESULTS_DIR / f"{uuid.uuid4()}.png"
-    output_path.write_bytes(image_bytes)
+    (RESULTS_DIR / f"{uuid.uuid4()}.png").write_bytes(image_bytes)
 
-    append_log({
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "request": {"prompt": prompt},
-        "images_generated": 1,
-        "price_usd": PRICE_PER_IMAGE,
-        "output_file": str(output_path),
-    })
-
-    return base64.b64encode(image_bytes).decode("ascii")
-
-
-def process_task(task: dict) -> dict:
-    if task.get("mode") == "describe":
-        return {"args_schema": ARGS_SCHEMA}
-
-    capability = task.get("capability")
-    if capability != CAPABILITY:
-        raise ValueError(f"Unsupported capability: {capability!r}")
-
-    body = task.get("body") or {}
-
-    prompt = body.get("prompt")
-    if not isinstance(prompt, str) or not prompt.strip():
-        raise ValueError("body.prompt must be a non-empty string")
-
-    image_b64 = generate_image(prompt.strip())
-    return {"result": {"image_base64": image_b64, "format": "png"}}
-
-
-def main() -> None:
-    task = json.load(sys.stdin)
-    result = process_task(task)
-    print(json.dumps(result, ensure_ascii=False))
+    print(json.dumps({"result": {"image_base64": base64.b64encode(image_bytes).decode(), "format": "png"}}))
 
 
 if __name__ == "__main__":

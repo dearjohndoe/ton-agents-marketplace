@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import base64
 import json
 import sys
@@ -7,9 +5,7 @@ import tempfile
 import time
 from pathlib import Path
 
-CAPABILITY = "text2voice"
-
-ARGS_SCHEMA: dict = {
+ARGS_SCHEMA = {
     "text": {
         "type": "string",
         "description": "Text to synthesize",
@@ -23,82 +19,64 @@ ARGS_SCHEMA: dict = {
 }
 
 
-def pick_english_voice(engine) -> str | None:
-    for voice in engine.getProperty("voices"):
-        voice_id = (voice.id or "").lower()
-        voice_name = (voice.name or "").lower()
-        langs = " ".join(
-            [
-                item.decode("utf-8", errors="ignore") if isinstance(item, bytes) else str(item)
-                for item in (voice.languages or [])
-            ]
-        ).lower()
-        if "en" in voice_id or "english" in voice_name or "en" in langs:
-            return voice.id
-    return None
-
-
-def synthesize_to_wav_base64(text: str, rate: int | None = None) -> str:
+def synthesize(text: str, rate: int | None = None) -> str:
     import pyttsx3
 
     engine = pyttsx3.init()
-    english_voice = pick_english_voice(engine)
-    if english_voice:
-        engine.setProperty("voice", english_voice)
+
+    # Prefer English voice if available
+    for voice in engine.getProperty("voices"):
+        langs = " ".join(
+            item.decode("utf-8", errors="ignore") if isinstance(item, bytes) else str(item)
+            for item in (voice.languages or [])
+        ).lower()
+        if "en" in (voice.id or "").lower() or "english" in (voice.name or "").lower() or "en" in langs:
+            engine.setProperty("voice", voice.id)
+            break
 
     if isinstance(rate, int) and 80 <= rate <= 300:
         engine.setProperty("rate", rate)
 
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-        temp_path = Path(temp_file.name)
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        tmp = Path(f.name)
 
     try:
-        engine.save_to_file(text, str(temp_path))
+        engine.save_to_file(text, str(tmp))
         engine.runAndWait()
 
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
-            if temp_path.exists() and temp_path.stat().st_size > 0:
+            if tmp.exists() and tmp.stat().st_size > 0:
                 break
             time.sleep(0.05)
 
-        audio_bytes = temp_path.read_bytes()
+        audio_bytes = tmp.read_bytes()
         if not audio_bytes:
             raise RuntimeError("TTS backend produced empty audio")
-        return base64.b64encode(audio_bytes).decode("ascii")
+        return base64.b64encode(audio_bytes).decode()
     finally:
-        temp_path.unlink(missing_ok=True)
+        tmp.unlink(missing_ok=True)
 
 
-def process_task(task: dict) -> dict:
+def main():
+    task = json.load(sys.stdin)
+
     if task.get("mode") == "describe":
-        return {"args_schema": ARGS_SCHEMA}
-
-    capability = task.get("capability")
-    if capability != CAPABILITY:
-        raise ValueError(f"Unsupported capability: {capability!r}")
+        print(json.dumps({"args_schema": ARGS_SCHEMA}))
+        return
 
     body = task.get("body") or {}
 
-    text = body.get("text")
-    if not isinstance(text, str) or not text.strip():
+    text = body.get("text", "").strip()
+    if not text:
         raise ValueError("body.text must be a non-empty string")
 
     rate = body.get("rate")
     if rate is not None:
-        try:
-            rate = int(rate)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("body.rate must be a number") from exc
+        rate = int(rate)
 
-    audio_b64 = synthesize_to_wav_base64(text.strip(), rate)
-    return {"result": {"audio_base64": audio_b64, "format": "wav"}}
-
-
-def main() -> None:
-    task = json.load(sys.stdin)
-    result = process_task(task)
-    print(json.dumps(result, ensure_ascii=False))
+    audio_b64 = synthesize(text, rate)
+    print(json.dumps({"result": {"audio_base64": audio_b64, "format": "wav"}}))
 
 
 if __name__ == "__main__":
