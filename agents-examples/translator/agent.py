@@ -1,0 +1,59 @@
+import json
+import os
+import sys
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent / ".env")
+
+ARGS_SCHEMA = {
+    "text": {
+        "type": "string",
+        "description": "Text to translate",
+        "required": True,
+    },
+    "target_language": {
+        "type": "string",
+        "description": "Target language, e.g. 'Russian', 'Spanish', 'fr', 'de'",
+        "required": True,
+    },
+}
+
+
+def main():
+    task = json.load(sys.stdin)
+
+    if task.get("mode") == "describe":
+        print(json.dumps({"args_schema": ARGS_SCHEMA}))
+        return
+
+    body = task.get("body") or {}
+
+    text = body.get("text", "").strip()
+    if not text:
+        raise ValueError("body.text must be a non-empty string")
+
+    target_language = body.get("target_language", "").strip()
+    if not target_language:
+        raise ValueError("body.target_language must be a non-empty string")
+
+    from google import genai
+
+    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    prompt = (
+        f"Translate the following text to {target_language}. "
+        "Return only the translated text, no explanations or extra content.\n\n"
+        f"{text}"
+    )
+    response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+
+    print(json.dumps({"result": response.text.strip()}))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)

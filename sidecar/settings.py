@@ -1,11 +1,5 @@
 import os
 from dataclasses import dataclass
-@dataclass
-class ArgSchema:
-    name: str
-    type: str
-    description: str
-    required: bool
 
 
 @dataclass
@@ -16,26 +10,23 @@ class Settings:
     agent_description: str
     agent_price: int
     agent_endpoint: str
-    agent_wallet: str
     agent_wallet_pk: str
     agent_wallet_seed: str | None
+    agent_wallet: str
     registry_address: str
     port: int
     payment_timeout: int
     sync_timeout: int
     final_timeout: int
     jobs_ttl: int
-    toncenter_base_url: str
-    toncenter_api_key: str | None
+    testnet: bool
     state_path: str
     tx_db_path: str
-    docs_path: str
-    ton_storage_base_url: str
-    ton_storage_session: str | None
     enforce_comment_nonce: bool
     refund_fee_nanoton: int
-    storage_extend_threshold_days: int
-    args_schema: list[ArgSchema]
+    has_quote: bool
+    rate_limit_requests: int
+    rate_limit_window: int
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -45,35 +36,17 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.lower() in {"1", "true", "yes", "on"}
 
 
-def _parse_args_schema() -> list[ArgSchema]:
-    result: list[ArgSchema] = []
-    prefix = "AGENT_ARG_"
-    for key, value in os.environ.items():
-        if not key.startswith(prefix):
-            continue
-        arg_name = key[len(prefix) :].strip().lower()
-        chunks = value.split(":")
-        if len(chunks) < 2:
-            raise ValueError(f"Invalid {key} format; expected type:description[:optional]")
-
-        arg_type = chunks[0].strip().lower()
-        description = chunks[1].strip()
-        optional = len(chunks) > 2 and chunks[2].strip().lower() == "optional"
-
-        if arg_type not in {"string", "number", "boolean"}:
-            raise ValueError(f"Invalid type for {key}: {arg_type}")
-
-        result.append(
-            ArgSchema(
-                name=arg_name,
-                type=arg_type,
-                description=description,
-                required=not optional,
-            )
-        )
-
-    result.sort(key=lambda item: item.name)
-    return result
+def _derive_wallet_address(pk_hex: str, testnet: bool) -> str:
+    from tonutils.contracts.wallet import WalletV4R2
+    from tonutils.types import PrivateKey
+    pk = PrivateKey(bytes.fromhex(pk_hex.removeprefix("0x")))
+    wallet = WalletV4R2.from_private_key(None, pk)  # type: ignore[arg-type]
+    return wallet.address.to_str(
+        is_user_friendly=True,
+        is_bounceable=False,
+        is_url_safe=True,
+        is_test_only=testnet,
+    )
 
 
 def load_settings(env_file: str | None = None) -> Settings:
@@ -88,13 +61,15 @@ def load_settings(env_file: str | None = None) -> Settings:
         "AGENT_DESCRIPTION",
         "AGENT_PRICE",
         "AGENT_ENDPOINT",
-        "AGENT_WALLET",
         "AGENT_WALLET_PK",
         "REGISTRY_ADDRESS",
     ]
     missing = [key for key in required_keys if not os.getenv(key)]
     if missing:
         raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
+
+    agent_wallet_pk = os.environ["AGENT_WALLET_PK"]
+    testnet = _env_bool("TESTNET", False)
 
     return Settings(
         agent_command=os.environ["AGENT_COMMAND"],
@@ -103,8 +78,8 @@ def load_settings(env_file: str | None = None) -> Settings:
         agent_description=os.environ["AGENT_DESCRIPTION"],
         agent_price=int(os.environ["AGENT_PRICE"]),
         agent_endpoint=os.environ["AGENT_ENDPOINT"],
-        agent_wallet=os.environ["AGENT_WALLET"],
-        agent_wallet_pk=os.environ["AGENT_WALLET_PK"],
+        agent_wallet=_derive_wallet_address(agent_wallet_pk, testnet),
+        agent_wallet_pk=agent_wallet_pk,
         agent_wallet_seed=os.getenv("AGENT_WALLET_SEED"),
         registry_address=os.environ["REGISTRY_ADDRESS"],
         port=int(os.getenv("PORT", "8080")),
@@ -112,17 +87,12 @@ def load_settings(env_file: str | None = None) -> Settings:
         sync_timeout=int(os.getenv("AGENT_SYNC_TIMEOUT", "30")),
         final_timeout=int(os.getenv("AGENT_FINAL_TIMEOUT", "1200")),
         jobs_ttl=int(os.getenv("JOBS_TTL_SECONDS", "3600")),
-        toncenter_base_url=os.getenv("TONCENTER_BASE_URL", "https://toncenter.com/api/v3"),
-        toncenter_api_key=os.getenv("TONCENTER_API_KEY"),
+        testnet=testnet,
         state_path=os.getenv("SIDECAR_STATE_PATH", ".sidecar_state.json"),
         tx_db_path=os.getenv("SIDECAR_TX_DB_PATH", "processed_txs.db"),
-        docs_path=os.getenv("DOCS_PATH", "docs.json"),
-        ton_storage_base_url=os.getenv("TON_STORAGE_BASE_URL", "https://mytonstorage.org"),
-        ton_storage_session=os.getenv("TON_STORAGE_SESSION"),
         enforce_comment_nonce=_env_bool("ENFORCE_COMMENT_NONCE", True),
         refund_fee_nanoton=int(os.getenv("REFUND_FEE_NANOTON", "500000")),
-        storage_extend_threshold_days=int(os.getenv("STORAGE_EXTEND_THRESHOLD_DAYS", "7")),
-        args_schema=_parse_args_schema(),
+        has_quote=_env_bool("AGENT_HAS_QUOTE", False),
+        rate_limit_requests=int(os.getenv("RATE_LIMIT_REQUESTS", "60")),
+        rate_limit_window=int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60")),
     )
-
-

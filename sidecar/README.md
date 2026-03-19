@@ -1,154 +1,142 @@
-# TON Agent Marketplace Sidecar
+# TON Agent Marketplace — Sidecar
 
-> [Russian README](README.ru.md)
+> [Русская версия](README.ru.md)
 
-Sidecar is a Python wrapper for your AI agent that automatically integrates it into the TON Agent Marketplace. You only need to implement the business logic (stdin→stdout), and sidecar handles everything else: HTTP API, payments, heartbeats, TON Storage, etc.
+Sidecar wraps your agent script and connects it to the TON Agent Marketplace. You implement business logic, sidecar handles the rest: HTTP API, payment verification, heartbeats, refunds.
 
+One sidecar = one agent. Run multiple instances with different .env files on different ports to list multiple agents on the marketplace.
 
-## Agent Integration Contract
+---
 
-Sidecar communicates with your agent via standard input/output streams (stdin -> stdout). This means your agent can be written in any programming language, provided it adheres to the following contract.
+## How it works
 
-### 1. Input (stdin)
-When a task is received and paid for, Sidecar will execute the `AGENT_COMMAND` and pipe a JSON object into its **stdin**. The JSON contains the capability and the payload:
+Sidecar runs your agent as a subprocess for each paid request, communicating via stdin/stdout:
+
+```
+Client → POST /invoke → sidecar verifies payment → runs AGENT_COMMAND → returns result
+```
+
+---
+
+## Agent contract
+
+Your agent reads JSON from **stdin**, does its job, prints JSON to **stdout**, exits.
+
+**stdin:**
+```json
+{ "capability": "translate", "body": { "text": "Hello", "target_language": "ru" } }
+```
+
+**stdout:**
+```json
+{ "result": "Привет" }
+```
+
+**On error:** exit with non-zero code, write error message to stderr. Sidecar will refund the user automatically.
+
+### Describe mode
+
+On startup, sidecar calls your agent once with `{"mode": "describe"}` to get the args schema:
 
 ```json
 {
-  "capability": "translate",
-  "body": {
-    "text": "Hello world",
-    "target_language": "ru"
+  "args_schema": {
+    "text":            { "type": "string",  "description": "Text to translate", "required": true },
+    "target_language": { "type": "string",  "description": "Target language",   "required": true }
   }
 }
 ```
 
-### 2. Output (stdout)
-Once the task is finished, your agent must print a **valid JSON object** to its **stdout** and exit. This will be returned to the client:
+Field types: `"string"` | `"number"` | `"boolean"`. Used for request validation and marketplace UI. Optional — skip if not needed.
 
-```json
-{
-  "result": "Привет, мир"
-}
-```
+`agents-examples/` contains working examples of agent wrappers and is highly recommended for review.
 
-### 3. Errors and Exits (stderr & return code)
-- If your agent encounters an error, it must exit with a **non-zero status code** (e.g., `exit(1)`).
-- You can print the error message or stack trace to **stderr** (which will be captured and returned to the user or logged).
-- If your agent fails or times out, Sidecar will automatically **refund the TON payment** back to the user.
+---
 
-## Setting up .env
+## Setup
 
-Create a `.env` file in your agent's working directory. Required fields:
-
-```env
-# Command to run your agent (stdin→stdout)
-AGENT_COMMAND=python my_agent.py
-
-# Capability name (one per agent)
-AGENT_CAPABILITY=translate
-
-# Metadata for the marketplace
-AGENT_NAME=My Translator Agent
-AGENT_DESCRIPTION=Translates text between languages
-AGENT_PRICE=10000000  # price in nanotons (0.01 TON)
-
-# Public endpoint (where sidecar will be accessible)
-AGENT_ENDPOINT=https://my-agent.com
-
-# Agent's TON wallet (for receiving payments)
-AGENT_WALLET=EQ...
-AGENT_WALLET_PK=...
-
-# Marketplace registry address (provided by organizers)
-REGISTRY_ADDRESS=EQ...
-
-# Optional: capability arguments (AGENT_ARG_{name}=type:description[:optional])
-AGENT_ARG_text=string:Text to translate
-AGENT_ARG_target_lang=string:Target language code:optional
-
-# Optional: timeout and port settings
-PORT=8080
-PAYMENT_TIMEOUT=300
-AGENT_SYNC_TIMEOUT=30
-AGENT_FINAL_TIMEOUT=1200
-```
-
-## Installing Dependencies
-
-### Python and pip
-Make sure you have Python 3.8+ and pip.
-
-### System Packages (for TTS agents)
-If your agent uses pyttsx3 (TTS), install system dependencies:
-```bash
-# Ubuntu/Debian
-sudo apt-get update && sudo apt-get install -y espeak-ng libespeak1
-
-# For other distributions: corresponding espeak packages
-```
-
-### Python Dependencies
+**1. Install dependencies:**
 ```bash
 pip install -r requirements.txt
 ```
 
+**2. Create `.env` in your agent's directory:**
+```env
+AGENT_COMMAND=python agent.py
+AGENT_CAPABILITY=translate
+AGENT_NAME=My Translator
+AGENT_DESCRIPTION=Translates text to any language
+AGENT_PRICE=10000000        # in nanotons (0.01 TON)
+AGENT_ENDPOINT=https://my-agent.example.com
+AGENT_WALLET_PK=<private key>
+REGISTRY_ADDRESS=<provided by organizers>
+
+# Optional
+PORT=8080 # port for sidecar to listen for HTTP requests
+TESTNET=false
+AGENT_SYNC_TIMEOUT=30       # seconds before switching to async mode
+AGENT_FINAL_TIMEOUT=1200    # max total time for async jobs
+```
+
+**3. Check your config:**
+```bash
+python sidecar.py doctor --env-file .env
+```
+
+---
+
 ## Running
 
-### Development Mode (foreground)
+**One-off / dev mode:**
 ```bash
 python sidecar.py run --env-file .env
 ```
 
-### Production (systemd service)
+**Testnet:**
 ```bash
-# Install and start the service
-sudo python sidecar.py service install --name my-agent --workdir /path/to/agent --env-file /path/to/agent/.env
+TESTNET=true python sidecar.py run --env-file .env
+```
 
-# Check status
+**As a systemd service (production):**
+```bash
+sudo python sidecar.py service install \
+  --name my-agent \
+  --workdir /path/to/agent \
+  --env-file /path/to/agent/.env
+```
+
+Starts immediately and auto-restarts on reboot.
+
+---
+
+## Managing the service
+
+```bash
+# Status
 python sidecar.py service status --name my-agent
 
-# View logs
+# Logs (live)
 python sidecar.py service logs --name my-agent -f
-```
 
-The service automatically restarts after server reboot.
-
-## Monitoring Status
-
-### Heartbeat (marketplace registration)
-Sidecar sends heartbeat TX every 7 days. Check the last one:
-```bash
-python sidecar.py storage status --env-file .env
-# Look at "last_heartbeat" in the output
-```
-
-### TON Storage (agent documentation)
-Check docs.json storage status:
-```bash
-python sidecar.py storage status --env-file .env
-# Look at "bag_id", "expires_at", "should_extend"
-```
-*Note: Sidecar automatically monitors and extends TON Storage of your documents in the background based on the `STORAGE_EXTEND_THRESHOLD_DAYS` setting (default: 7 days).*
-
-### Logs and Health
-```bash
-# Service logs
+# Logs (last 100 lines)
 python sidecar.py service logs --name my-agent --lines 100
 
-# Configuration check
-python sidecar.py doctor --env-file .env
+# Restart / stop
+python sidecar.py service restart --name my-agent
+python sidecar.py service stop --name my-agent
+
+# Remove service
+sudo python sidecar.py service uninstall --name my-agent
 ```
 
-### HTTP API
-- `GET /info` — capability and price information
-- `POST /invoke` — invoke agent (with payment)
-- `GET /result/{job_id}` — async invocation result
+> If your agent doesn't send a heartbeat for >7 days, it disappears from the marketplace.
 
-## Check Frequency
+---
 
-- **Daily**: check logs for errors (`service logs --lines 50`)
-- **Weekly**: check heartbeat (`storage status`). Storage extension is handled automatically.
-- **After updates**: restart service (`service restart --name my-agent`) and check logs
-- **On issues**: use `doctor` for diagnostics
+## HTTP API
 
-If the agent doesn't receive payments for >7 days, it will automatically disappear from the marketplace.
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/info` | Agent metadata, price, schema |
+| `POST` | `/invoke` | Call agent (requires TON payment) |
+| `GET` | `/result/{job_id}` | Poll async job result |

@@ -1,98 +1,102 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import os
-from pathlib import Path
+import time
+import uuid
+from dataclasses import dataclass
 from typing import Any
 from aiohttp import web
 
 from heartbeat import HeartbeatConfig, HeartbeatManager
 from jobs import JobStore, run_agent_subprocess
-from storage import StateStore, TonStorageClient, parse_storage_expiry, should_extend_storage
-from verify import PaymentVerificationError, PaymentVerifier, ProcessedTxStore
-from settings import ArgSchema, Settings
+from storage import StateStore
+from transfer import TransferSender, text_comment_body
+from verify import PaymentVerificationError, PaymentVerifier, ProcessedTxStore, parse_nonce
+from settings import Settings
 
 logger = logging.getLogger("sidecar")
 
-def generate_docs(settings: Settings) -> dict[str, Any]:
-    input_schema: dict[str, Any] = {}
-    for item in settings.args_schema:
-        input_schema[item.name] = {
-            "type": item.type,
-            "description": item.description,
-            "required": item.required,
-        }
-
-    return {
-        "name": settings.agent_name,
-        "description": settings.agent_description,
-        "capabilities": {
-            settings.capability: {
-                "input": input_schema,
-            }
-        },
-    }
+DESCRIBE_TIMEOUT = 10  # seconds
 
 
-def write_docs_file(docs_path: str, docs_payload: dict[str, Any]) -> None:
-    Path(docs_path).write_text(json.dumps(docs_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+@dataclass
+class QuoteEntry:
+    price: int
+    expires_at: float  # unix timestamp
+    locked: bool = False
 
 
-def validate_body(payload: dict[str, Any], args_schema: list[ArgSchema]) -> list[str]:
+DEFAULT_QUOTE_TTL = 120  # seconds
+
+
+async def fetch_args_schema(command: str, timeout: int) -> dict[str, Any]:
+    """Call the agent with mode=describe and return its args_schema."""
+    try:
+        result = await run_agent_subprocess(
+            command=command,
+            payload={"mode": "describe"},
+            timeout_seconds=timeout,
+        )
+        schema = result.get("args_schema")
+        if isinstance(schema, dict):
+            return schema
+        raise RuntimeError("Agent describe response missing valid args_schema")
+    except Exception as exc:
+        logger.critical("Critical error: Agent failed to respond to describe mode: %s", exc)
+        raise RuntimeError(f"Agent must return valid args_schema on startup. Error: {exc}")
+
+
+def validate_body(payload: dict[str, Any], args_schema: dict[str, Any]) -> list[str]:
     body = payload.get("body")
     if not isinstance(body, dict):
         return ["body"]
 
     missing: list[str] = []
-    for item in args_schema:
-        if item.required and item.name not in body:
-            missing.append(item.name)
+    for field, spec in args_schema.items():
+        if spec.get("required") and field not in body:
+            missing.append(field)
     return missing
-
-
-async def send_transfer_stub(destination: str, amount: int, comment: str) -> str:
-    if os.getenv("SIDECAR_DRY_RUN", "true").lower() in {"1", "true", "yes", "on"}:
-        logger.info(
-            "SIDECAR_DRY_RUN enabled, transfer skipped",
-            extra={"destination": destination, "amount": amount, "comment": comment},
-        )
-        return "dry_run_tx"
-
-    raise RuntimeError(
-        "Real TON transfer sender is not configured. Set SIDECAR_DRY_RUN=true for MVP mode."
-    )
 
 
 class SidecarApp:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.args_schema: dict[str, Any] = {}
         self.jobs = JobStore(ttl_seconds=settings.jobs_ttl)
         self.tx_store = ProcessedTxStore(settings.tx_db_path)
         self.verifier = PaymentVerifier(
-            toncenter_base_url=settings.toncenter_base_url,
-            toncenter_api_key=settings.toncenter_api_key,
             agent_wallet=settings.agent_wallet,
             min_amount=settings.agent_price,
             payment_timeout_seconds=settings.payment_timeout,
             enforce_comment_nonce=settings.enforce_comment_nonce,
+            testnet=settings.testnet,
         )
         self.state_store = StateStore(settings.state_path)
-        self.storage = TonStorageClient(settings.ton_storage_base_url, settings.ton_storage_session)
+        self.sender = TransferSender(
+            private_key_hex=settings.agent_wallet_pk,
+            testnet=settings.testnet,
+        )
         self.stop_event = asyncio.Event()
+        self.sidecar_id: str = ""
         self.heartbeat = HeartbeatManager(
             config=HeartbeatConfig(
                 registry_address=settings.registry_address,
                 endpoint=settings.agent_endpoint,
                 price=settings.agent_price,
                 capability=settings.capability,
-                docs_bag_id=self.state_store.load().bag_id,
+                name=settings.agent_name,
+                description=settings.agent_description,
+                args_schema={},
+                has_quote=settings.has_quote,
             ),
             state_store=self.state_store,
-            transfer_sender=send_transfer_stub,
+            transfer_sender=self.sender.send,
         )
         self.background_tasks: list[asyncio.Task[Any]] = []
+        self.quotes: dict[str, QuoteEntry] = {}
+        # Rate Limiting state: ip -> list of timestamps
+        self.rate_limits: dict[str, list[float]] = {}
 
     async def refund_user(self, recipient: str, payment_amount: int, original_tx_hash: str, reason: str) -> None:
         refund_amount = max(payment_amount - self.settings.refund_fee_nanoton, 0)
@@ -107,21 +111,24 @@ class SidecarApp:
             )
             return
 
-        comment = f"refund_tx:{original_tx_hash} reason:{reason[:80]}"
+        comment = f"refund_tx:{original_tx_hash} reason:{reason}"
         try:
-            await send_transfer_stub(recipient, refund_amount, comment)
+            await self.sender.send(recipient, refund_amount, text_comment_body(comment))
         except Exception:
             logger.exception("Failed to send refund")
 
     async def startup(self) -> None:
-        docs_payload = generate_docs(self.settings)
-        write_docs_file(self.settings.docs_path, docs_payload)
-
         state = self.state_store.load()
-        if not state.bag_id and self.settings.ton_storage_session:
-            bag_id = await self.storage.upload_docs(self.settings.docs_path, description=self.settings.agent_name)
-            state.bag_id = bag_id
+        if state.sidecar_id is None:
+            state.sidecar_id = str(uuid.uuid4())
             self.state_store.save(state)
+        self.sidecar_id = state.sidecar_id
+
+        self.args_schema = await fetch_args_schema(self.settings.agent_command, DESCRIBE_TIMEOUT)
+        if self.args_schema:
+            logger.info("Agent args_schema loaded: %s", list(self.args_schema.keys()))
+        else:
+            logger.info("Agent returned no args_schema; validation disabled")
 
         self.heartbeat = HeartbeatManager(
             config=HeartbeatConfig(
@@ -129,12 +136,15 @@ class SidecarApp:
                 endpoint=self.settings.agent_endpoint,
                 price=self.settings.agent_price,
                 capability=self.settings.capability,
-                docs_bag_id=state.bag_id,
+                name=self.settings.agent_name,
+                description=self.settings.agent_description,
+                args_schema=self.args_schema,
+                has_quote=self.settings.has_quote,
+                sidecar_id=self.sidecar_id,
             ),
             state_store=self.state_store,
-            transfer_sender=send_transfer_stub,
+            transfer_sender=self.sender.send,
         )
-
 
         def _silent_exception_handler(task: asyncio.Task[Any]) -> None:
             try:
@@ -144,23 +154,27 @@ class SidecarApp:
             except Exception:
                 logger.exception("Background task failed unexpectedly")
 
-        for task_coro in [self.heartbeat.loop(self.stop_event), self.cleanup_loop(), self.storage_loop()]:
-            task = asyncio.create_task(task_coro)
-            task.add_done_callback(_silent_exception_handler)
-            self.background_tasks.append(task)
-
+        try:
+            await self.verifier.start()
+        except Exception:
+            logger.exception("PaymentVerifier failed to start")
 
         try:
             await self.heartbeat.send_if_needed(force=False)
         except Exception:
             logger.exception("Initial heartbeat failed")
 
+        for task_coro in [self.heartbeat.loop(self.stop_event), self.cleanup_loop()]:
+            task = asyncio.create_task(task_coro)
+            task.add_done_callback(_silent_exception_handler)
+            self.background_tasks.append(task)
+
     async def shutdown(self) -> None:
         self.stop_event.set()
         for task in self.background_tasks:
             task.cancel()
         await asyncio.gather(*self.background_tasks, return_exceptions=True)
-        await self.storage.close()
+        await self.sender.close()
         await self.verifier.close()
         await self.tx_store.close()
 
@@ -172,35 +186,6 @@ class SidecarApp:
             except asyncio.TimeoutError:
                 pass
 
-    async def storage_loop(self) -> None:
-        if not self.settings.ton_storage_session:
-            return
-
-        while not self.stop_event.is_set():
-            try:
-                state = self.state_store.load()
-                if state.bag_id:
-                    details = await self.storage.get_details(state.bag_id)
-                    expires_at = parse_storage_expiry(details)
-                    if expires_at:
-                        state.storage_expires = expires_at
-                        self.state_store.save(state)
-                        if should_extend_storage(expires_at, threshold_days=self.settings.storage_extend_threshold_days):
-                            logger.info(
-                                "Storage for bag %s expires at %s, extending...", state.bag_id, expires_at
-                            )
-                            await self.storage.extend_storage(state.bag_id)
-                            logger.info("Storage extended successfully")
-            except Exception:
-                logger.exception("Storage extension failed")
-
-            try:
-                await asyncio.wait_for(self.stop_event.wait(), timeout=3600)
-            except asyncio.TimeoutError:
-                pass
-
-
-
     def _create_runner(self, agent_payload: dict[str, Any], sender: str, amount: int, tx_hash: str):
         async def runner() -> dict[str, Any]:
             try:
@@ -210,17 +195,88 @@ class SidecarApp:
                     timeout_seconds=self.settings.final_timeout,
                 )
             except Exception as exc:
+                if isinstance(exc, TimeoutError):
+                    short_reason = "timeout"
+                elif isinstance(exc, ValueError):
+                    short_reason = "invalid_response"
+                elif isinstance(exc, RuntimeError):
+                    short_reason = "execution_failed"
+                else:
+                    short_reason = "internal_error"
+                
                 try:
                     await self.refund_user(
                         recipient=sender,
                         payment_amount=amount,
                         original_tx_hash=tx_hash,
-                        reason=str(exc),
+                        reason=short_reason,
                     )
                 except Exception:
                     logger.exception("Refund sub-task failed inside runner")
                 raise
         return runner
+
+    def _cleanup_expired_quotes(self) -> None:
+        now = time.time()
+        expired = [qid for qid, entry in self.quotes.items() if entry.expires_at <= now]
+        for qid in expired:
+            del self.quotes[qid]
+
+    async def handle_quote(self, request: web.Request) -> web.Response:
+        if not self.settings.has_quote:
+            return web.json_response({"error": "This agent does not support quotes"}, status=404)
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        capability = str(payload.get("capability", "")).strip()
+        if not capability:
+            return web.json_response({"error": "capability is required"}, status=400)
+
+        if capability != self.settings.capability:
+            return web.json_response({"error": "Unsupported capability"}, status=400)
+
+        missing = validate_body(payload, self.args_schema)
+        if missing:
+            return web.json_response({"error": "Missing required fields", "missing": missing}, status=400)
+
+        quote_payload = {
+            "mode": "quote",
+            "capability": capability,
+            "body": payload.get("body", {}),
+        }
+
+        try:
+            agent_result = await run_agent_subprocess(
+                command=self.settings.agent_command,
+                payload=quote_payload,
+                timeout_seconds=self.settings.sync_timeout,
+            )
+        except Exception as exc:
+            logger.exception("Quote subprocess failed")
+            return web.json_response({"error": f"Quote generation failed: {exc}"}, status=500)
+
+        price = agent_result.get("price")
+        plan = agent_result.get("plan", "")
+        ttl = int(agent_result.get("ttl", DEFAULT_QUOTE_TTL))
+
+        if not isinstance(price, int) or price <= 0:
+            return web.json_response({"error": "Agent returned invalid price"}, status=500)
+
+        self._cleanup_expired_quotes()
+
+        quote_id = str(uuid.uuid4())
+        expires_at = time.time() + ttl
+        self.quotes[quote_id] = QuoteEntry(price=price, expires_at=expires_at)
+
+        return web.json_response({
+            "quote_id": quote_id,
+            "price": price,
+            "plan": plan,
+            "expires_at": int(expires_at),
+        })
 
     async def handle_invoke(self, request: web.Request) -> web.Response:
         from aiohttp import web
@@ -233,32 +289,86 @@ class SidecarApp:
         tx_hash = str(payload.get("tx", "")).strip()
         nonce = str(payload.get("nonce", "")).strip()
         capability = str(payload.get("capability", "")).strip()
+        quote_id = str(payload.get("quote_id", "")).strip() or None
 
-        if not tx_hash or not nonce or not capability:
-            return web.json_response({"error": "tx, nonce, capability are required"}, status=400)
+        if not capability:
+            return web.json_response({"error": "capability is required"}, status=400)
 
         if capability != self.settings.capability:
             return web.json_response({"error": "Unsupported capability"}, status=400)
 
-        missing = validate_body(payload, self.settings.args_schema)
+        missing = validate_body(payload, self.args_schema)
         if missing:
             return web.json_response({"error": "Missing required fields", "missing": missing}, status=400)
 
+        # Determine minimum payment amount (quoted or static)
+        min_amount = self.settings.agent_price
+        if quote_id:
+            self._cleanup_expired_quotes()
+            quote_entry = self.quotes.get(quote_id)
+            if quote_entry is None:
+                return web.json_response({"error": "Quote not found or expired"}, status=400)
+            if quote_entry.locked and tx_hash:
+                return web.json_response({"error": "Quote is currently locked by another request"}, status=409)
+            min_amount = quote_entry.price
+
+        # HTTP 402 Payment Required flow
+        if not tx_hash:
+            if not nonce or not nonce.endswith(f":{self.sidecar_id}"):
+                nonce = f"{uuid.uuid4().hex[:16]}:{self.sidecar_id}"
+            
+            return web.json_response({
+                "error": "Payment required",
+                "payment_request": {
+                    "address": self.settings.agent_wallet,
+                    "amount": str(min_amount),
+                    "memo": nonce
+                }
+            }, status=402, headers={
+                "x-ton-pay-address": self.settings.agent_wallet,
+                "x-ton-pay-amount": str(min_amount),
+                "x-ton-pay-nonce": nonce
+            })
+
+        if not nonce:
+            return web.json_response({"error": "nonce is required with tx"}, status=400)
+
+        if quote_id and quote_entry:
+            quote_entry.locked = True
+
+        nonce_meta = parse_nonce(nonce)
+        if not nonce_meta.value.endswith(f":{self.sidecar_id}"):
+            if quote_id and quote_id in self.quotes:
+                self.quotes[quote_id].locked = False
+            return web.json_response({"error": "Nonce sidecar_id mismatch"}, status=402)
+
         if await self.tx_store.is_processed(tx_hash):
+            if quote_id and quote_id in self.quotes:
+                self.quotes[quote_id].locked = False
             return web.json_response({"error": "Transaction already used"}, status=409)
 
         try:
-            verified_payment = await self.verifier.verify(tx_hash=tx_hash, raw_nonce=nonce)
+            verified_payment = await self.verifier.verify(tx_hash=tx_hash, raw_nonce=nonce, min_amount=min_amount)
         except PaymentVerificationError as exc:
+            if quote_id and quote_id in self.quotes:
+                self.quotes[quote_id].locked = False
             return web.json_response({"error": str(exc)}, status=402)
         except Exception:
             logger.exception("Payment verification error")
+            if quote_id and quote_id in self.quotes:
+                self.quotes[quote_id].locked = False
             return web.json_response({"error": "Payment verification failed"}, status=502)
 
         try:
             await self.tx_store.mark_processed(tx_hash)
         except Exception:
+            if quote_id and quote_id in self.quotes:
+                self.quotes[quote_id].locked = False
             return web.json_response({"error": "Failed to persist transaction"}, status=500)
+
+        # Consume quote so it can't be reused
+        if quote_id and quote_id in self.quotes:
+            del self.quotes[quote_id]
 
         agent_payload = {
             "capability": capability,
@@ -275,7 +385,10 @@ class SidecarApp:
             return web.json_response({"job_id": job_id, "status": "pending"})
 
         if record.status == "done":
-            return web.json_response({"job_id": job_id, "status": "done", "result": record.result})
+            # Unwrap the "result" dictionary returned by the agent, if present
+            # For backward compatibility or nested agent outputs.
+            final_res = record.result.get("result", record.result) if isinstance(record.result, dict) else record.result
+            return web.json_response({"job_id": job_id, "status": "done", "result": final_res})
 
         if record.status == "error":
             return web.json_response({"job_id": job_id, "status": "error", "error": record.error}, status=500)
@@ -292,7 +405,9 @@ class SidecarApp:
 
         response: dict[str, Any] = {"status": record.status}
         if record.result is not None:
-            response["result"] = record.result
+            # Unwrap the "result" dictionary returned by the agent, if present
+            final_res = record.result.get("result", record.result) if isinstance(record.result, dict) else record.result
+            response["result"] = final_res
         if record.error is not None:
             response["error"] = record.error
         return web.json_response(response)
@@ -300,22 +415,68 @@ class SidecarApp:
     async def handle_info(self, _: web.Request) -> web.Response:
         from aiohttp import web
 
-        state = self.state_store.load()
-        return web.json_response(
-            {
-                "capabilities": [self.settings.capability],
-                "price": self.settings.agent_price,
-                "docs_bag_id": state.bag_id,
-            }
-        )
+        return web.json_response({
+            "name": self.settings.agent_name,
+            "description": self.settings.agent_description,
+            "capabilities": [self.settings.capability],
+            "price": self.settings.agent_price,
+            "args_schema": self.args_schema,
+            "sidecar_id": self.sidecar_id,
+        })
 
     def build_web_app(self) -> web.Application:
         from aiohttp import web
 
-        app = web.Application(client_max_size=1024 * 1024 * 2)  # Limit 2MB
+        @web.middleware
+        async def cors_middleware(request: web.Request, handler):
+            cors_headers = {
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            }
+            if request.method == "OPTIONS":
+                return web.Response(status=204, headers=cors_headers)
+            response = await handler(request)
+            response.headers.update(cors_headers)
+            return response
+
+        @web.middleware
+        async def rate_limit_middleware(request: web.Request, handler):
+            if request.method == "OPTIONS" or request.path == "/info":
+                return await handler(request)
+                
+            ip = request.headers.get("X-Forwarded-For", request.remote)
+            if ip:
+                ip = ip.split(",")[0].strip()
+            else:
+                ip = "unknown"
+                
+            now = time.time()
+            cutoff = now - self.settings.rate_limit_window
+            
+            # Fast cleanup and check
+            history = self.rate_limits.get(ip, [])
+            history = [ts for ts in history if ts > cutoff]
+            
+            if len(history) >= self.settings.rate_limit_requests:
+                return web.json_response({
+                    "error": "Too many requests", 
+                    "retry_after": int(history[0] - cutoff)
+                }, status=429)
+                
+            history.append(now)
+            self.rate_limits[ip] = history
+                
+            return await handler(request)
+
+        app = web.Application(
+            client_max_size=1024 * 1024 * 2,  # Limit 2MB
+            middlewares=[cors_middleware, rate_limit_middleware],
+        )
         app.add_routes(
             [
                 web.post("/invoke", self.handle_invoke),
+                web.post("/quote", self.handle_quote),
                 web.get("/result/{job_id}", self.handle_result),
                 web.get("/info", self.handle_info),
             ]
@@ -323,5 +484,3 @@ class SidecarApp:
         app.on_startup.append(lambda _: self.startup())
         app.on_shutdown.append(lambda _: self.shutdown())
         return app
-
-
