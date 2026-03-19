@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { useTonConnectUI, useTonAddress } from '@tonconnect/ui-react'
 import { Address } from '@ton/core'
-import { invokeAgent, pollResult, fetchQuote, fetchSidecarId } from '../lib/agentClient'
-import type { QuoteResult } from '../lib/agentClient'
-import { generateNonce, buildCommentPayload, bocToMsgHash } from '../lib/crypto'
+import { invokeAgent, pollResult, fetchQuote, invokePreflight } from '../lib/agentClient'
+import type { QuoteResult, PaymentRequest } from '../lib/agentClient'
+import { buildCommentPayload, bocToMsgHash } from '../lib/crypto'
 import type { Agent, AgentRating } from '../types'
 import { TESTNET } from '../config'
 
@@ -33,7 +33,6 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
   const [tonConnectUI] = useTonConnectUI()
   const walletAddress = useTonAddress()
 
-  const [sidecarId, setSidecarId] = useState<string | null>(null)
   const [fields, setFields] = useState<Record<string, string>>({})
   const [status, setStatus] = useState<CallStatus>('idle')
   const [result, setResult] = useState<any>(null)
@@ -44,12 +43,11 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
-    fetchSidecarId(agent.endpoint).then(setSidecarId)
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
       if (countdownRef.current) clearInterval(countdownRef.current)
     }
-  }, [agent.endpoint])
+  }, [])
 
   useEffect(() => {
     if (status !== 'quoted' || !quote) return
@@ -95,20 +93,23 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
     setErrorMsg('')
     setResult(null)
 
-    if (!sidecarId) {
+    const body = buildBody()
+    let paymentRequest: PaymentRequest
+    
+    try {
+      paymentRequest = await invokePreflight(agent.endpoint, agent.capabilities[0] ?? '', body, quote?.quoteId)
+    } catch (err: any) {
       setStatus('error')
-      setErrorMsg('Sidecar ID not loaded yet, please retry')
+      setErrorMsg(err?.message ?? 'Failed to reach agent')
       return
     }
 
-    const payAmount = quote ? quote.price : agent.price
-    const nonce = generateNonce(sidecarId)
     let txBoc: string
     try {
-      const recipientAddress = Address.parse(agent.address).toString({ bounceable: false, urlSafe: true, testOnly: TESTNET })
+      const recipientAddress = Address.parse(paymentRequest.address).toString({ bounceable: false, urlSafe: true, testOnly: TESTNET })
       const res = await tonConnectUI.sendTransaction({
         validUntil: Math.floor(Date.now() / 1000) + 300,
-        messages: [{ address: recipientAddress, amount: String(payAmount), payload: buildCommentPayload(nonce) }],
+        messages: [{ address: recipientAddress, amount: paymentRequest.amount, payload: buildCommentPayload(paymentRequest.nonce) }],
       })
       txBoc = bocToMsgHash(res.boc)
     } catch (err: any) {
@@ -119,8 +120,7 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
 
     setStatus('invoking')
     try {
-      const body = buildBody()
-      const res = await invokeAgent(agent.endpoint, txBoc, nonce, agent.capabilities[0] ?? '', body, quote?.quoteId)
+      const res = await invokeAgent(agent.endpoint, txBoc, paymentRequest.nonce, agent.capabilities[0] ?? '', body, quote?.quoteId)
 
       if (res.status === 'done') {
         setResult(res.result); setStatus('done')

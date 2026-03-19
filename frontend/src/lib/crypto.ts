@@ -1,12 +1,5 @@
 import { beginCell, Cell } from '@ton/core'
 
-// Generates a random nonce with embedded sidecar ID
-// Format: {uuid}:{sidecar_id}
-export function generateNonce(sidecarId: string): string {
-  const id = crypto.randomUUID()
-  return `${id}:${sidecarId}`
-}
-
 // Build TON transaction payload with nonce as text comment
 // Note: unencrypted for MVP — encryption via TON Connect wallet is a roadmap item
 export function buildCommentPayload(nonce: string): string {
