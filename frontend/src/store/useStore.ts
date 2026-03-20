@@ -3,7 +3,7 @@ import { persist } from 'zustand/middleware'
 import { fetchAgentPage, type Cursor } from '../lib/toncenter'
 import { MOCK_AGENTS } from '../lib/mockAgents'
 
-const USE_MOCK = false // import.meta.env.VITE_USE_MOCK === 'true'
+const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
 import { CACHE_TTL_MS, AGENTS_PER_PAGE, RATINGS_BACKEND } from '../config'
 import type { Agent, AgentRating } from '../types'
 

@@ -13,6 +13,7 @@ from typing import Any
 from pytoniq_core import Transaction
 from tonutils.clients import LiteBalancer
 from tonutils.types import NetworkGlobalID
+from transfer import PAYMENT_OPCODE
 
 logger = logging.getLogger(__name__)
 
@@ -96,14 +97,14 @@ def parse_nonce(raw_nonce: str) -> NonceMeta:
     return NonceMeta(value=raw_nonce.strip())
 
 
-def _parse_comment(body: Any) -> str:
+def _parse_payment_nonce(body: Any) -> str:
     if body is None:
         return ""
     try:
         s = body.begin_parse()
         if s.remaining_bits < 32:
             return ""
-        if s.load_uint(32) != 0:
+        if s.load_uint(32) != PAYMENT_OPCODE:
             return ""
         return s.load_snake_string()
     except Exception:
@@ -177,7 +178,7 @@ class WalletMonitor:
                     if tx.in_msg is None:
                         continue
                         
-                    comment = _parse_comment(tx.in_msg.body)
+                    comment = _parse_payment_nonce(tx.in_msg.body)
                     if comment:
                         self._by_nonce[comment.strip()] = tx
                         batch_had_new = True
@@ -290,7 +291,7 @@ class PaymentVerifier:
                 if not sender:
                     raise PaymentVerificationError("Transaction sender is missing")
 
-                comment = _parse_comment(tx.in_msg.body)
+                comment = _parse_payment_nonce(tx.in_msg.body)
                 return VerifiedPayment(
                     tx_hash=tx_hash,
                     sender=sender,
