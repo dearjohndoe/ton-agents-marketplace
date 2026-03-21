@@ -4,6 +4,8 @@ import asyncio
 import logging
 from typing import Awaitable, Callable
 
+import json
+
 from pytoniq_core import Cell, begin_cell
 from tonutils.clients import LiteBalancer
 from tonutils.contracts.wallet import WalletV4R2
@@ -12,6 +14,8 @@ from tonutils.types import NetworkGlobalID, PrivateKey
 logger = logging.getLogger(__name__)
 
 HEARTBEAT_OPCODE = 0xAC52AB67
+PAYMENT_OPCODE = 0x50415900
+REFUND_OPCODE = 0x52464E44
 
 
 def heartbeat_body(comment: str) -> Cell:
@@ -19,6 +23,24 @@ def heartbeat_body(comment: str) -> Cell:
         begin_cell()
         .store_uint(HEARTBEAT_OPCODE, 32)
         .store_snake_string(comment)
+        .end_cell()
+    )
+
+
+def payment_body(nonce: str) -> Cell:
+    return (
+        begin_cell()
+        .store_uint(PAYMENT_OPCODE, 32)
+        .store_snake_string(nonce)
+        .end_cell()
+    )
+
+
+def refund_body(original_tx_hash: str, reason: str, sidecar_id: str) -> Cell:
+    return (
+        begin_cell()
+        .store_uint(REFUND_OPCODE, 32)
+        .store_snake_string(json.dumps({"tx": original_tx_hash, "reason": reason, "sidecar_id": sidecar_id}))
         .end_cell()
     )
 

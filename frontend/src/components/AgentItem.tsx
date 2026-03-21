@@ -3,9 +3,11 @@ import { useTonConnectUI, useTonAddress } from '@tonconnect/ui-react'
 import { Address } from '@ton/core'
 import { invokeAgent, pollResult, fetchQuote, invokePreflight } from '../lib/agentClient'
 import type { QuoteResult, PaymentRequest } from '../lib/agentClient'
-import { buildCommentPayload, bocToMsgHash } from '../lib/crypto'
+import { buildPaymentPayload, bocToMsgHash, buildRatingPayload } from '../lib/crypto'
 import type { Agent, AgentRating } from '../types'
 import { TESTNET } from '../config'
+import { useAgentRating } from '../hooks/useAgentRating'
+import { RatingBlock } from './RatingBlock'
 
 interface Props {
   agent: Agent
@@ -39,6 +41,10 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
   const [errorMsg, setErrorMsg] = useState('')
   const [quote, setQuote] = useState<QuoteResult | null>(null)
   const [quoteSecondsLeft, setQuoteSecondsLeft] = useState(0)
+  const [reviewScore, setReviewScore] = useState(0)
+  const [reviewHover, setReviewHover] = useState(0)
+  const [reviewStatus, setReviewStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle')
+  const [lastNonce, setLastNonce] = useState('')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -108,12 +114,14 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
       return
     }
 
+    setLastNonce(paymentRequest.nonce)
+
     let txBoc: string
     try {
       const recipientAddress = Address.parse(paymentRequest.address).toString({ bounceable: false, urlSafe: true, testOnly: TESTNET })
       const res = await tonConnectUI.sendTransaction({
         validUntil: Math.floor(Date.now() / 1000) + 300,
-        messages: [{ address: recipientAddress, amount: paymentRequest.amount, payload: buildCommentPayload(paymentRequest.nonce) }],
+        messages: [{ address: recipientAddress, amount: paymentRequest.amount, payload: buildPaymentPayload(paymentRequest.nonce) }],
       })
       txBoc = bocToMsgHash(res.boc)
     } catch (err: any) {
@@ -149,10 +157,32 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
     }
   }
 
+  async function handleReview() {
+    if (!reviewScore || reviewStatus === 'sending') return
+    setReviewStatus('sending')
+    try {
+      const agentAddr = Address.parse(agent.address).toString({ bounceable: false, urlSafe: true, testOnly: TESTNET })
+      await tonConnectUI.sendTransaction({
+        validUntil: Math.floor(Date.now() / 1000) + 300,
+        messages: [{
+          address: agentAddr,
+          amount: '10000000',
+          payload: buildRatingPayload(agent.sidecarId, lastNonce, reviewScore),
+        }],
+      })
+      setReviewStatus('sent')
+      // TODO: decrease when transactions become faster
+      setTimeout(() => ratingRefresh(), 8000)
+    } catch (err: any) {
+      setReviewStatus(err?.message === 'Reject request' ? 'idle' : 'error')
+    }
+  }
+
   const busy = status === 'quoting' || status === 'paying' || status === 'invoking' || status === 'polling'
   const hasSchema = Object.keys(inputSchema).length > 0
 
   const isLive = (Date.now() / 1000 - agent.lastHeartbeat) < 300
+  const { rating: onChainRating, loading: ratingLoading, error: ratingError, refresh: ratingRefresh } = useAgentRating(agent.address, agent.sidecarId, expanded)
 
   return (
     <div className={`agent-item ${expanded ? 'agent-item--open' : ''}`}>
@@ -163,7 +193,6 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
           <div className="agent-row-meta">
             {isLive && <span className="agent-live-dot" title="Online" />}
             {agent.capabilities.map(c => <span key={c} className="tag">{c}</span>)}
-            {rating && <span className="tag tag--gold">★ {rating.avgScore.toFixed(1)}</span>}
           </div>
         </div>
         <div className="agent-row-right">
@@ -176,11 +205,17 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
         </div>
       </button>
 
+      {/* Summary — always visible: compact rating + description */}
+      {(onChainRating || ratingLoading || ratingError || agent.description) && (
+        <div className="agent-summary" onClick={onToggle}>
+          <RatingBlock rating={onChainRating} loading={ratingLoading} error={ratingError} onRefresh={ratingRefresh} />
+          {agent.description && <p className="agent-summary-desc">{agent.description}</p>}
+        </div>
+      )}
+
       {/* Expanded body */}
       {expanded && (
         <div className="agent-body">
-          {agent.description && <p className="agent-desc">{agent.description}</p>}
-
           <div className="agent-body-meta">
             <div className="meta-item">
               <span className="meta-label">Endpoint</span>
@@ -201,7 +236,48 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
             <div className="result-box">
               <span className="meta-label">Result</span>
               <pre className="result-content">{typeof result === 'string' ? result : JSON.stringify(result, null, 2)}</pre>
-              <button className="btn btn-outline btn-sm" onClick={() => { setStatus('idle'); setResult(null); setQuote(null) }}>
+
+              {reviewStatus === 'sent' ? (
+                <div className="review-done">
+                  <span className="review-done-icon">✓</span>
+                  <span>Thanks! Your rating is on its way on-chain.</span>
+                </div>
+              ) : (
+                <div className="review-cta">
+                  <p className="review-cta-text">
+                    Enjoyed the result? Rate this agent to help others discover quality services.
+                  </p>
+                  <div className="review-stars">
+                    {[1, 2, 3, 4, 5].map(s => (
+                      <button
+                        key={s}
+                        type="button"
+                        className={`review-star ${s <= (reviewHover || reviewScore) ? 'review-star--active' : ''}`}
+                        onMouseEnter={() => setReviewHover(s)}
+                        onMouseLeave={() => setReviewHover(0)}
+                        onClick={() => setReviewScore(s)}
+                        disabled={reviewStatus === 'sending'}
+                      >
+                        ★
+                      </button>
+                    ))}
+                  </div>
+                  {reviewScore > 0 && (
+                    <button
+                      className="btn btn-review"
+                      onClick={handleReview}
+                      disabled={reviewStatus === 'sending'}
+                    >
+                      {reviewStatus === 'sending' ? 'Submitting…' : 'Submit Rating · 0.01 TON'}
+                    </button>
+                  )}
+                  {reviewStatus === 'error' && (
+                    <p className="review-error">Failed to submit. Try again?</p>
+                  )}
+                </div>
+              )}
+
+              <button className="btn btn-outline btn-sm" onClick={() => { setStatus('idle'); setResult(null); setQuote(null); setReviewScore(0); setReviewStatus('idle'); setLastNonce('') }}>
                 Call again
               </button>
             </div>

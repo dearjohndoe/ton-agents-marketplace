@@ -8,5 +8,10 @@ export const RATINGS_BACKEND = (import.meta.env.VITE_RATINGS_BACKEND as string) 
 export const CACHE_TTL_MS = import.meta.env.DEV ? 0 : 5 * 60 * 1000
 export const AGENTS_PER_PAGE = 20
 export const TX_PAGE_SIZE = 100
+export const PAYMENT_OPCODE = 0x50415900
+export const REFUND_OPCODE = 0x52464E44
+export const RATING_OPCODE = 0x52617465
 export const HEARTBEAT_OPCODE = 0xAC52AB67
 export const PAYMENT_TIMEOUT_SEC = 300
+
+export const MIN_RATING_TXS = parseInt(import.meta.env.VITE_MIN_RATING_TXS || '1', 5)

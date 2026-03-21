@@ -11,7 +11,7 @@ from aiohttp import web
 from heartbeat import HeartbeatConfig, HeartbeatManager
 from jobs import JobStore, run_agent_subprocess
 from storage import StateStore
-from transfer import TransferSender, text_comment_body
+from transfer import TransferSender, refund_body
 from verify import PaymentVerificationError, PaymentVerifier, ProcessedTxStore, parse_nonce
 from settings import Settings
 
@@ -112,9 +112,8 @@ class SidecarApp:
             )
             return
 
-        comment = f"refund_tx:{original_tx_hash} reason:{reason}"
         try:
-            await self.sender.send(recipient, refund_amount, text_comment_body(comment))
+            await self.sender.send(recipient, refund_amount, refund_body(original_tx_hash, reason, self.sidecar_id))
         except Exception:
             logger.exception("Failed to send refund")
 

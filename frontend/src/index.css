@@ -294,9 +294,42 @@ body::before {
 }
 .chevron--open { transform: rotate(180deg); color: var(--primary); }
 
+/* ── Summary — always visible ── */
+.agent-summary {
+  padding: 2px 16px 14px;
+  display: flex; flex-direction: column; gap: 8px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.agent-summary-desc {
+  font-size: 13px;
+  color: var(--text-sub);
+  line-height: 1.55;
+  font-weight: 300;
+}
+
+/* Compact rating inside summary */
+.agent-summary .rating-block {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  margin: 0;
+  gap: 5px;
+}
+.agent-summary .rating-bar {
+  height: 4px;
+  border-radius: 2px;
+}
+.agent-summary .rating-star {
+  font-size: 0.95em;
+}
+.agent-summary .rating-meta {
+  font-size: 0.78em;
+}
+
 /* ── Expanded body ── */
 .agent-body {
-  padding: 0 16px 16px;
+  padding: 14px 16px 16px;
   display: flex; flex-direction: column; gap: 12px;
   border-top: 1px solid var(--border);
   animation: slide-down 0.22s cubic-bezier(0.4,0,0.2,1);
@@ -464,6 +497,89 @@ body::before {
   color: var(--primary);
 }
 
+/* ── Review CTA ── */
+.review-cta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1.5px dashed var(--border-bright);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, var(--primary-dim) 0%, transparent 70%);
+}
+.review-cta-text {
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
+  line-height: 1.5;
+  font-weight: 300;
+}
+.review-stars {
+  display: flex;
+  gap: 2px;
+}
+.review-star {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 26px;
+  color: var(--surface-3);
+  transition: color 0.15s, transform 0.15s;
+  padding: 2px 3px;
+  line-height: 1;
+  -webkit-tap-highlight-color: transparent;
+}
+.review-star:hover { transform: scale(1.15); }
+.review-star--active { color: var(--gold); }
+.review-star:disabled { cursor: not-allowed; opacity: 0.5; }
+
+.btn-review {
+  background: var(--gold-bg);
+  color: var(--gold);
+  border: 1.5px solid rgba(180, 83, 9, 0.2);
+  padding: 8px 20px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.18s;
+  font-family: 'Outfit', sans-serif;
+  width: auto;
+}
+.btn-review:hover:not(:disabled) {
+  border-color: var(--gold);
+  transform: translateY(-1px);
+}
+.btn-review:disabled { opacity: 0.5; cursor: not-allowed; }
+[data-theme="dark"] .btn-review { border-color: rgba(255, 184, 0, 0.3); }
+[data-theme="dark"] .btn-review:hover:not(:disabled) { border-color: var(--gold); }
+
+.review-error {
+  font-size: 12px;
+  color: var(--error);
+}
+.review-done {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-radius: var(--radius-sm);
+  background: rgba(5, 150, 105, 0.08);
+  border: 1px solid rgba(5, 150, 105, 0.15);
+  color: var(--success);
+  font-size: 13px;
+  font-weight: 500;
+}
+[data-theme="dark"] .review-done {
+  background: rgba(0, 214, 143, 0.08);
+  border-color: rgba(0, 214, 143, 0.15);
+}
+.review-done-icon {
+  font-weight: 700;
+  font-size: 15px;
+}
+
 /* ── Alerts ── */
 .alert {
   padding: 11px 14px; border-radius: var(--radius-sm);
@@ -566,4 +682,67 @@ body::before {
   font-family: 'Outfit', sans-serif !important;
   font-size: 13px !important;
   font-weight: 600 !important;
+}
+
+/* ── Rating block ── */
+.rating-block {
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+.rating-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.rating-star {
+  font-size: 1.1em;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.rating-star--new {
+  color: var(--text-muted);
+}
+.rating-meta {
+  font-size: 0.85em;
+  color: var(--text-muted);
+}
+.rating-refresh {
+  margin-left: auto;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 16px;
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  transition: color 0.15s, background 0.15s;
+  line-height: 1;
+}
+.rating-refresh:hover {
+  color: var(--primary);
+  background: var(--primary-dim);
+}
+.rating-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.rating-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+.rating-bar-fill--pulse {
+  background: var(--surface-3);
+  animation: rating-pulse 1.5s ease-in-out infinite;
+}
+@keyframes rating-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
 }

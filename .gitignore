@@ -1,5 +1,6 @@
 .venv
 venv
+.vite
 __pycache__
 *.env
 *.env.test
