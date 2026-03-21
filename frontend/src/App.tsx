@@ -1,4 +1,16 @@
 import { useEffect, useState } from 'react'
+
+declare global {
+  interface Window {
+    Telegram?: {
+      WebApp?: {
+        ready: () => void
+        expand: () => void
+        colorScheme: 'light' | 'dark'
+      }
+    }
+  }
+}
 import { TonConnectButton } from '@tonconnect/ui-react'
 import { AgentList } from './pages/AgentList'
 
@@ -30,11 +42,19 @@ function MoonIcon() {
 
 export function App() {
   const [theme, setTheme] = useState<Theme>(() => {
-    const saved = (localStorage.getItem('theme') as Theme) ?? 'light'
-    // Set synchronously to avoid flash on first paint
+    const tgTheme = window.Telegram?.WebApp?.colorScheme as Theme | undefined
+    const saved = tgTheme ?? (localStorage.getItem('theme') as Theme) ?? 'light'
     document.documentElement.setAttribute('data-theme', saved)
     return saved
   })
+
+  useEffect(() => {
+    const tg = window.Telegram?.WebApp
+    if (tg) {
+      tg.ready()
+      tg.expand()
+    }
+  }, [])
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
