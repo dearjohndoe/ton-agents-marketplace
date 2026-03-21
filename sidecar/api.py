@@ -30,13 +30,14 @@ class QuoteEntry:
 DEFAULT_QUOTE_TTL = 120  # seconds
 
 
-async def fetch_args_schema(command: str, timeout: int) -> dict[str, Any]:
+async def fetch_args_schema(command: str, timeout: int, sidecar_id: str) -> dict[str, Any]:
     """Call the agent with mode=describe and return its args_schema."""
     try:
         result = await run_agent_subprocess(
             command=command,
             payload={"mode": "describe"},
             timeout_seconds=timeout,
+            env={"OWN_SIDECAR_ID": sidecar_id},
         )
         schema = result.get("args_schema")
         if isinstance(schema, dict):
@@ -124,7 +125,7 @@ class SidecarApp:
             self.state_store.save(state)
         self.sidecar_id = state.sidecar_id
 
-        self.args_schema = await fetch_args_schema(self.settings.agent_command, DESCRIBE_TIMEOUT)
+        self.args_schema = await fetch_args_schema(self.settings.agent_command, DESCRIBE_TIMEOUT, self.sidecar_id)
         if self.args_schema:
             logger.info("Agent args_schema loaded: %s", list(self.args_schema.keys()))
         else:
@@ -193,6 +194,7 @@ class SidecarApp:
                     command=self.settings.agent_command,
                     payload=agent_payload,
                     timeout_seconds=self.settings.final_timeout,
+                    env={"OWN_SIDECAR_ID": self.sidecar_id},
                 )
             except Exception as exc:
                 if isinstance(exc, TimeoutError):
@@ -253,6 +255,7 @@ class SidecarApp:
                 command=self.settings.agent_command,
                 payload=quote_payload,
                 timeout_seconds=self.settings.sync_timeout,
+                env={"OWN_SIDECAR_ID": self.sidecar_id},
             )
         except Exception as exc:
             logger.exception("Quote subprocess failed")

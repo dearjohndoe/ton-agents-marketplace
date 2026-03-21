@@ -89,9 +89,17 @@ class JobStore:
                     task.cancel()
 
 
-async def run_agent_subprocess(command: str, payload: dict[str, Any], timeout_seconds: int) -> dict[str, Any]:
+async def run_agent_subprocess(
+    command: str, payload: dict[str, Any], timeout_seconds: int, env: dict[str, str] | None = None
+) -> dict[str, Any]:
+    import os
+    env_vars = os.environ.copy()
+    if env:
+        env_vars.update(env)
+
     process = await asyncio.create_subprocess_shell(
         command,
+        env=env_vars,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
