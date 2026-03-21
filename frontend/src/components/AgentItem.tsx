@@ -80,6 +80,10 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
     try {
       const q = await fetchQuote(agent.endpoint, agent.capabilities[0] ?? '', buildBody())
       setQuote(q)
+      if (q.plan && typeof q.plan === 'object' && 'quote_id' in q.plan) {
+        const planQuoteId = (q.plan as { quote_id: string }).quote_id
+        setFields(f => ({ ...f, quote_id: planQuoteId }))
+      }
       setStatus('quoted')
     } catch (err: any) {
       setStatus('error')
@@ -231,7 +235,21 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
 
               {status === 'quoted' && quote && (
                 <div className="quote-box">
-                  <div className="quote-plan">{quote.plan}</div>
+                  {quote.plan && typeof quote.plan === 'object' && 'steps' in quote.plan && (
+                    <div className="quote-plan">
+                      {quote.plan.steps.map((s, i) => (
+                        <div key={i} className="quote-step">
+                          <span className="quote-step-num">{s.step + 1}</span>
+                          <span className="quote-step-agent">{s.agent}</span>
+                          <span className="quote-step-cap">{s.capability}</span>
+                          <span className="quote-step-price">{s.price_ton}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {quote.plan && typeof quote.plan === 'string' && quote.plan && (
+                    <div className="quote-plan">{quote.plan}</div>
+                  )}
                   <div className="quote-meta">
                     <span className="quote-price">{nanoToTon(quote.price)} TON</span>
                     <span className={`quote-timer ${quoteSecondsLeft === 0 ? 'quote-timer--expired' : ''}`}>

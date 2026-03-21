@@ -18,6 +18,7 @@ interface Store {
   ratings: Record<string, AgentRating>
 
   init: () => Promise<void>
+  refresh: () => Promise<void>
   loadMore: () => Promise<void>
   loadRatings: () => Promise<void>
 }
@@ -69,6 +70,11 @@ export const useStore = create<Store>()(
         } finally {
           set({ loading: false })
         }
+      },
+
+      refresh: async () => {
+        set({ lastFetchTime: null, cursor: null, hasMoreOnChain: true })
+        await get().init()
       },
 
       loadMore: async () => {

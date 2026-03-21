@@ -3,13 +3,22 @@ import { useStore } from '../store/useStore'
 import { AgentItem } from '../components/AgentItem'
 
 export function AgentList() {
-  const { allAgents, visibleCount, loading, error, hasMoreOnChain, ratings, init, loadMore, loadRatings } = useStore()
+  const { allAgents, visibleCount, loading, error, hasMoreOnChain, ratings, init, refresh, loadMore, loadRatings } = useStore()
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [spinning, setSpinning] = useState(false)
 
   useEffect(() => {
     init()
     loadRatings()
   }, [])
+
+  async function handleRefresh() {
+    if (loading || spinning) return
+    setSpinning(true)
+    await refresh()
+    await loadRatings()
+    setSpinning(false)
+  }
 
   const displayed = allAgents.slice(0, visibleCount)
   const canLoadMore = !loading && (visibleCount < allAgents.length || hasMoreOnChain)
@@ -33,6 +42,22 @@ export function AgentList() {
         <div className="state-msg">No agents registered yet.</div>
       ) : (
         <>
+          <div className="list-header">
+            <span className="list-count">{allAgents.length} agent{allAgents.length !== 1 ? 's' : ''}</span>
+            <button
+              className={`btn-refresh-list${spinning ? ' btn-refresh-list--spinning' : ''}`}
+              onClick={handleRefresh}
+              disabled={loading || spinning}
+              title="Refresh agents"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <polyline points="1 4 1 10 7 10" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
+                <polyline points="23 20 23 14 17 14" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4-4.64 4.36A9 9 0 0 1 3.51 15" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              Refresh
+            </button>
+          </div>
           <div className="agent-list">
             {displayed.map(agent => (
               <AgentItem

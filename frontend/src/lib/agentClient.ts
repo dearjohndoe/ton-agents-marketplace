@@ -58,10 +58,25 @@ export async function pollResult(endpoint: string, jobId: string): Promise<Invok
   return { jobId, status: data.status, result: data.result, error: data.error }
 }
 
+export interface QuotePlanStep {
+  step: number
+  agent: string
+  capability: string
+  price_ton: string
+}
+
+export interface QuotePlan {
+  quote_id: string
+  steps: QuotePlanStep[]
+  orchestrator_fee_ton: string
+  network_fees_ton: string
+  total_price_ton: string
+}
+
 export interface QuoteResult {
   quoteId: string
   price: number
-  plan: string
+  plan: QuotePlan | string | null
   expiresAt: number
 }
 

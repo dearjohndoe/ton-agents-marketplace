@@ -155,6 +155,58 @@ body::before {
   font-size: 14px; font-weight: 400;
 }
 
+/* ── List header ── */
+.list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px;
+}
+.list-count {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  letter-spacing: 0.4px;
+  text-transform: lowercase;
+}
+.btn-refresh-list {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: 1.5px solid var(--border);
+  color: var(--text-muted);
+  font-family: 'Outfit', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  transition: color 0.18s, border-color 0.18s, background 0.18s;
+  letter-spacing: 0.1px;
+}
+.btn-refresh-list:hover:not(:disabled) {
+  color: var(--primary);
+  border-color: var(--border-bright);
+  background: var(--primary-dim);
+}
+.btn-refresh-list:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.btn-refresh-list svg {
+  flex-shrink: 0;
+  transition: transform 0.18s;
+}
+.btn-refresh-list--spinning svg {
+  animation: spin-once 0.7s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+@keyframes spin-once {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
 /* ── Agent list ── */
 .agent-list { display: flex; flex-direction: column; gap: 6px; }
 
@@ -387,7 +439,12 @@ body::before {
   flex-direction: column;
   gap: 8px;
 }
-.quote-plan { font-size: 13px; line-height: 1.5; color: var(--text); }
+.quote-plan { font-size: 13px; line-height: 1.5; color: var(--text); display: flex; flex-direction: column; gap: 4px; }
+.quote-step { display: flex; align-items: center; gap: 8px; }
+.quote-step-num { width: 18px; height: 18px; border-radius: 50%; background: var(--border); color: var(--text-muted); font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.quote-step-agent { font-weight: 500; flex: 1; }
+.quote-step-cap { color: var(--text-muted); font-size: 12px; }
+.quote-step-price { color: var(--text-muted); font-size: 12px; margin-left: auto; }
 .quote-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .quote-price { font-weight: 600; font-size: 14px; color: var(--text); }
 .quote-timer { font-size: 12px; color: var(--text-muted); }
