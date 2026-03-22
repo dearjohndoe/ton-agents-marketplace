@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useTonConnectUI, useTonAddress } from '@tonconnect/ui-react'
 import { Address } from '@ton/core'
-import { invokeAgent, pollResult, fetchQuote, invokePreflight, getConnectionMode } from '../lib/agentClient'
+import { invokeAgent, pollResult, fetchQuote, invokePreflight, getConnectionMode, checkGatewayHealth } from '../lib/agentClient'
 import type { QuoteResult, PaymentRequest, ConnectionMode } from '../lib/agentClient'
 import { buildPaymentPayload, bocToMsgHash, buildRatingPayload } from '../lib/crypto'
 import type { Agent, AgentRating } from '../types'
@@ -62,8 +62,17 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
   const [reviewHover, setReviewHover] = useState(0)
   const [reviewStatus, setReviewStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle')
   const [lastNonce, setLastNonce] = useState('')
+  const [connMode, setConnMode] = useState<ConnectionMode>(() => getConnectionMode(agent.endpoint))
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Re-check gateway health each time the card is expanded
+  useEffect(() => {
+    if (!expanded) return
+    checkGatewayHealth().then(() => {
+      setConnMode(getConnectionMode(agent.endpoint))
+    })
+  }, [expanded, agent.endpoint])
 
   useEffect(() => {
     return () => {
@@ -237,7 +246,7 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
             <div className="meta-item">
               <span className="meta-label">Endpoint</span>
               <a href={agent.endpoint} target="_blank" rel="noopener noreferrer" className="link">{agent.endpoint}</a>
-              <ConnectionBadge mode={getConnectionMode(agent.endpoint)} />
+              <ConnectionBadge mode={connMode} />
             </div>
             <div className="meta-item">
               <span className="meta-label">Last heartbeat</span>

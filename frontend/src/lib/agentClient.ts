@@ -7,16 +7,29 @@ import { SSL_GATEWAY } from '../config'
  *  - frontend itself is on HTTP (local dev)
  *  - agent endpoint is already HTTPS
  * Via gateway when:
- *  - frontend is on HTTPS (TMA / GitHub Pages) AND agent is on HTTP
+ *  - frontend is on HTTPS (TMA / GitHub Pages) AND agent is on HTTP AND gateway is reachable
  */
 export type ConnectionMode = 'direct' | 'proxy' | 'insecure'
+
+// Gateway availability flag — updated by checkGatewayHealth()
+let _gatewayAvailable = false
+
+export async function checkGatewayHealth(): Promise<void> {
+  if (!SSL_GATEWAY) return
+  try {
+    await axios.get(`${SSL_GATEWAY}/health`, { timeout: 5000 })
+    _gatewayAvailable = true
+  } catch {
+    _gatewayAvailable = false
+  }
+}
 
 export function getConnectionMode(endpoint: string): ConnectionMode {
   const frontendIsHttps = window.location.protocol === 'https:'
   const agentIsHttps = endpoint.startsWith('https://')
 
   if (agentIsHttps) return 'direct'
-  if (frontendIsHttps && SSL_GATEWAY) return 'proxy'
+  if (frontendIsHttps && SSL_GATEWAY && _gatewayAvailable) return 'proxy'
   return 'insecure'
 }
 
