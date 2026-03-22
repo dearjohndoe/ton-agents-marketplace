@@ -16,7 +16,6 @@ agents-examples/*/results/*
 PITCH.md
 PROJECT.md
 tests/
-gen_wallet.py
 .quotes_cache.db
 TASK_*
 orchestrator.log

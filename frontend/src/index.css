@@ -353,6 +353,21 @@ body::before {
   white-space: nowrap;
 }
 
+/* ── Connection badge ── */
+.conn-badge {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px; font-weight: 600;
+  padding: 2px 6px; border-radius: var(--radius-xs);
+  letter-spacing: 0.4px; text-transform: uppercase;
+  white-space: nowrap; line-height: 1;
+  vertical-align: middle;
+}
+.conn-badge--ok { background: rgba(5, 150, 105, 0.10); color: var(--success); border: 1px solid rgba(5, 150, 105, 0.20); }
+.conn-badge--proxy { background: var(--primary-dim); color: var(--primary); border: 1px solid var(--border-bright); }
+.conn-badge--warn { background: var(--error-bg); color: var(--error); border: 1px solid rgba(220, 38, 38, 0.18); }
+[data-theme="dark"] .conn-badge--ok { background: rgba(0, 214, 143, 0.10); border-color: rgba(0, 214, 143, 0.25); }
+[data-theme="dark"] .conn-badge--warn { background: rgba(255, 77, 106, 0.10); border-color: rgba(255, 77, 106, 0.25); }
+
 .agent-divider {
   height: 1px;
   background: linear-gradient(90deg, transparent, var(--border), transparent);

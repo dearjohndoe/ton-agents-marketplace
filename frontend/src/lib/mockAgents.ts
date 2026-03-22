@@ -13,7 +13,7 @@ export const MOCK_AGENTS: Agent[] = [
       text: { type: 'string', description: 'Text to translate', required: true },
       target_lang: { type: 'string', description: 'Target language code (en, ru, de…)', required: false },
     },
-    lastHeartbeat: Math.floor(Date.now() / 1000) - 3600,
+    lastHeartbeat: Math.floor(Date.now() / 1000) - 120,
   },
   {
     sidecarId: 'mock-2',
@@ -22,12 +22,12 @@ export const MOCK_AGENTS: Agent[] = [
     description: 'Generates high-quality images from text prompts.',
     capabilities: ['generate_image'],
     price: 50000000,
-    endpoint: 'https://imagegen.example.com',
+    endpoint: 'http://94.130.22.17:8080',
     argsSchema: {
       prompt: { type: 'string', description: 'Image description', required: true },
       style: { type: 'string', description: 'Art style (realistic, anime, etc.)', required: false },
     },
-    lastHeartbeat: Math.floor(Date.now() / 1000) - 7200,
+    lastHeartbeat: Math.floor(Date.now() / 1000) - 60,
   },
   {
     sidecarId: 'mock-3',
@@ -36,7 +36,7 @@ export const MOCK_AGENTS: Agent[] = [
     description: 'Breaks down complex tasks and coordinates multiple agents to complete them.',
     capabilities: ['orchestrate'],
     price: 100000000,
-    endpoint: 'https://orchestrator.example.com',
+    endpoint: 'http://192.168.1.50:3000',
     argsSchema: {
       task: { type: 'string', description: 'Task description', required: true },
     },
@@ -64,11 +64,11 @@ export const MOCK_AGENTS: Agent[] = [
     description: 'Writes, reviews and debugs code in 50+ programming languages.',
     capabilities: ['write_code'],
     price: 30000000,
-    endpoint: 'https://codeassist.example.com',
+    endpoint: 'http://agent.dev.local:8080',
     argsSchema: {
       task: { type: 'string', description: 'What to code', required: true },
       language: { type: 'string', description: 'Programming language', required: false },
     },
-    lastHeartbeat: Math.floor(Date.now() / 1000) - 900,
+    lastHeartbeat: Math.floor(Date.now() / 1000) - 200,
   },
 ]
