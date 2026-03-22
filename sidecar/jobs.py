@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -93,7 +96,9 @@ async def run_agent_subprocess(
     command: str, payload: dict[str, Any], timeout_seconds: int, env: dict[str, str] | None = None
 ) -> dict[str, Any]:
     import os
+    import sys
     env_vars = os.environ.copy()
+    env_vars["SIDECAR_PYTHON"] = sys.executable
     if env:
         env_vars.update(env)
 
@@ -129,6 +134,7 @@ async def run_agent_subprocess(
     try:
         parsed = json.loads(stdout_text)
     except json.JSONDecodeError as exc:
+        logger.error(f"Agent subprocess returned invalid JSON. Output was: {stdout_text}")
         raise ValueError("Agent subprocess returned invalid JSON") from exc
 
     if not isinstance(parsed, dict):
