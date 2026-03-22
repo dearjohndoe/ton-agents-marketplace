@@ -70,7 +70,7 @@ export async function invokePreflight(
 
   const { url, headers } = resolveUrl(endpoint, '/invoke')
   try {
-    await axios.post(url, payload, { timeout: 35000, headers })
+    await axios.post(url, payload, { timeout: 90000, headers })
     throw new Error('Expected 402 Payment Required, but got success')
   } catch (err: any) {
     if (err.response?.status === 402 && err.response.data?.payment_request) {
@@ -96,7 +96,7 @@ export async function invokeAgent(
   const payload: Record<string, unknown> = { tx, nonce, capability, body }
   if (quoteId) payload.quote_id = quoteId
   const { url, headers } = resolveUrl(endpoint, '/invoke')
-  const { data } = await axios.post(url, payload, { timeout: 35000, headers })
+  const { data } = await axios.post(url, payload, { timeout: 90000, headers })
   return { jobId: data.job_id, status: data.status, result: data.result, error: data.error }
 }
 
@@ -134,7 +134,7 @@ export async function fetchQuote(
   body: Record<string, string | number | boolean>
 ): Promise<QuoteResult> {
   const { url, headers } = resolveUrl(endpoint, '/quote')
-  const { data } = await axios.post(url, { capability, body }, { timeout: 35000, headers })
+  const { data } = await axios.post(url, { capability, body }, { timeout: 60000, headers })
   return {
     quoteId: data.quote_id,
     price: data.price,

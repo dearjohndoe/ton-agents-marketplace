@@ -75,7 +75,7 @@ class ProcessedTxStore:
 
         # Run in background. Store history for 30 days.
         # TODO: Move to worker
-        self.cleanup(older_than_seconds=30 * 24 * 3600)
+        asyncio.create_task(self.cleanup(older_than_seconds=30 * 24 * 3600))
 
     async def close(self) -> None:
         if self._conn:
