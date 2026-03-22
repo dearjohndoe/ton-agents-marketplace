@@ -73,7 +73,7 @@ def handle_service_install(args: argparse.Namespace) -> int:
     service_name = args.name
     workdir = str(Path(args.workdir).resolve())
     env_file = str(Path(args.env_file).resolve())
-    python_bin = str(Path(args.python_bin or sys.executable).resolve())
+    python_bin = str(Path(sys.executable).absolute())
     sidecar_path = str(Path(args.sidecar_path).resolve())
     unit_path = Path(f"/etc/systemd/system/{service_name}.service")
 
@@ -115,7 +115,19 @@ def handle_service_uninstall(args: argparse.Namespace) -> int:
     if _run_command(["systemctl", "daemon-reload"]) != 0:
         return 1
 
-    print(json.dumps({"uninstalled": True, "service": f"{service_name}.service"}, ensure_ascii=False))
+    removed_files = []
+    if getattr(args, "env_file", None):
+        try:
+            settings = load_settings(args.env_file)
+            for path in [settings.state_path, settings.tx_db_path]:
+                p = Path(path)
+                if p.exists():
+                    p.unlink()
+                    removed_files.append(str(p))
+        except Exception as exc:
+            print(f"Warning: could not clean up state files: {exc}")
+
+    print(json.dumps({"uninstalled": True, "service": f"{service_name}.service", "removed_files": removed_files}, ensure_ascii=False))
     return 0
 
 
@@ -179,10 +191,10 @@ def parse_cli_args() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argume
     install_parser = service_sub.add_parser("install", help="Install + enable + start systemd service")
     install_parser.add_argument("--workdir", default=str(Path.cwd()), help="Working directory for service")
     install_parser.add_argument("--env-file", default=".env", help="Path to .env file")
-    install_parser.add_argument("--python-bin", default=sys.executable, help="Python executable path")
     install_parser.add_argument("--sidecar-path", default=__file__, help="Path to sidecar.py")
 
-    service_sub.add_parser("uninstall", help="Disable and remove systemd service")
+    uninstall_parser = service_sub.add_parser("uninstall", help="Disable and remove systemd service")
+    uninstall_parser.add_argument("--env-file", default=None, help="Path to .env file to clean up state files")
     service_sub.add_parser("start", help="Start service")
     service_sub.add_parser("stop", help="Stop service")
     service_sub.add_parser("restart", help="Restart service")

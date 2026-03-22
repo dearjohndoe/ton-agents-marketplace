@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { useTonConnectUI, useTonAddress } from '@tonconnect/ui-react'
 import { Address } from '@ton/core'
-import { invokeAgent, pollResult, fetchQuote, invokePreflight } from '../lib/agentClient'
-import type { QuoteResult, PaymentRequest } from '../lib/agentClient'
+import { invokeAgent, pollResult, fetchQuote, invokePreflight, getConnectionMode, checkGatewayHealth } from '../lib/agentClient'
+import type { QuoteResult, PaymentRequest, ConnectionMode } from '../lib/agentClient'
 import { buildPaymentPayload, bocToMsgHash, buildRatingPayload } from '../lib/crypto'
 import type { Agent, AgentRating } from '../types'
 import { TESTNET } from '../config'
@@ -31,6 +31,23 @@ function timeAgo(ts: number) {
   return `${Math.floor(s / 86400)} d. ago`
 }
 
+const connLabel: Record<ConnectionMode, string> = {
+  direct: 'https',
+  proxy: 'via proxy',
+  insecure: 'http',
+}
+const connClass: Record<ConnectionMode, string> = {
+  direct: 'conn-badge--ok',
+  proxy: 'conn-badge--proxy',
+  insecure: 'conn-badge--warn',
+}
+function ConnectionBadge({ mode }: { mode: ConnectionMode }) {
+  return <span className={`conn-badge ${connClass[mode]}`} title={
+    mode === 'direct' ? 'Direct encrypted connection' :
+    mode === 'proxy' ? 'Routed through SSL gateway' : 'Connection is not encrypted'
+  }>{connLabel[mode]}</span>
+}
+
 export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
   const [tonConnectUI] = useTonConnectUI()
   const walletAddress = useTonAddress()
@@ -45,8 +62,17 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
   const [reviewHover, setReviewHover] = useState(0)
   const [reviewStatus, setReviewStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle')
   const [lastNonce, setLastNonce] = useState('')
+  const [connMode, setConnMode] = useState<ConnectionMode>(() => getConnectionMode(agent.endpoint))
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Re-check gateway health each time the card is expanded
+  useEffect(() => {
+    if (!expanded) return
+    checkGatewayHealth().then(() => {
+      setConnMode(getConnectionMode(agent.endpoint))
+    })
+  }, [expanded, agent.endpoint])
 
   useEffect(() => {
     return () => {
@@ -220,6 +246,7 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
             <div className="meta-item">
               <span className="meta-label">Endpoint</span>
               <a href={agent.endpoint} target="_blank" rel="noopener noreferrer" className="link">{agent.endpoint}</a>
+              <ConnectionBadge mode={connMode} />
             </div>
             <div className="meta-item">
               <span className="meta-label">Last heartbeat</span>
