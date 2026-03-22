@@ -36,6 +36,7 @@ jobs:
           VITE_REGISTRY_ADDRESS: ${{ secrets.VITE_REGISTRY_ADDRESS }}
           VITE_TESTNET: ${{ secrets.VITE_TESTNET }}
           VITE_RATINGS_BACKEND: ${{ secrets.VITE_RATINGS_BACKEND }}
+          VITE_SSL_GATEWAY: ${{ secrets.VITE_SSL_GATEWAY }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: frontend/dist
