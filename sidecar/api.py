@@ -218,13 +218,24 @@ class SidecarApp:
         if result.get("type") != "file" or "data" not in result:
             return result
 
+        raw_data = result["data"]
+        if not isinstance(raw_data, str) or not raw_data:
+            raise ValueError("File result 'data' must be a non-empty base64 string")
+
         file_id = uuid.uuid4().hex
         mime_type = result.get("mime_type", "application/octet-stream")
         ext = self._MIME_EXT.get(mime_type, "")
         file_name = result.get("file_name") or f"{file_id[:12]}{ext}"
 
-        file_bytes = base64.b64decode(result["data"])
-        file_path = self._file_store_dir / file_id
+        try:
+            file_bytes = base64.b64decode(raw_data)
+        except Exception as exc:
+            raise ValueError(f"File result contains invalid base64 data: {exc}") from exc
+
+        if not file_bytes:
+            raise ValueError("File result decoded to empty bytes")
+
+        file_path = self._file_store_dir / f"{file_id}{ext}"
         file_path.write_bytes(file_bytes)
 
         expires_at = time.time() + self._file_store_ttl
@@ -242,6 +253,17 @@ class SidecarApp:
             "file_name": file_name,
             "expires_in": self._file_store_ttl,
         }
+
+    def _safe_extract_result(self, record_result: Any) -> tuple[dict[str, Any] | Any, str | None]:
+        """Extract and process agent result safely. Returns (result, error_or_none)."""
+        try:
+            final_res = record_result.get("result", record_result) if isinstance(record_result, dict) else record_result
+            if isinstance(final_res, dict):
+                final_res = self._process_file_result(final_res)
+            return final_res, None
+        except Exception as exc:
+            logger.exception("Failed to process agent result")
+            return None, f"Invalid agent response: {exc}"
 
     def _cleanup_file(self, file_id: str) -> None:
         entry = self._file_store.pop(file_id, None)
@@ -469,9 +491,9 @@ class SidecarApp:
             return web.json_response({"job_id": job_id, "status": "pending"})
 
         if record.status == "done":
-            final_res = record.result.get("result", record.result) if isinstance(record.result, dict) else record.result
-            if isinstance(final_res, dict):
-                final_res = self._process_file_result(final_res)
+            final_res, extract_err = self._safe_extract_result(record.result)
+            if extract_err:
+                return web.json_response({"job_id": job_id, "status": "error", "error": extract_err}, status=500)
             return web.json_response({"job_id": job_id, "status": "done", "result": final_res})
 
         if record.status == "error":
@@ -489,10 +511,12 @@ class SidecarApp:
 
         response: dict[str, Any] = {"status": record.status}
         if record.result is not None:
-            final_res = record.result.get("result", record.result) if isinstance(record.result, dict) else record.result
-            if isinstance(final_res, dict):
-                final_res = self._process_file_result(final_res)
-            response["result"] = final_res
+            final_res, extract_err = self._safe_extract_result(record.result)
+            if extract_err:
+                response["status"] = "error"
+                response["error"] = extract_err
+            else:
+                response["result"] = final_res
         if record.error is not None:
             response["error"] = record.error
         return web.json_response(response)
