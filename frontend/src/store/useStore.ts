@@ -4,8 +4,8 @@ import { fetchAgentPage, type Cursor } from '../lib/toncenter'
 import { MOCK_AGENTS } from '../lib/mockAgents'
 
 const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
-import { CACHE_TTL_MS, AGENTS_PER_PAGE, RATINGS_BACKEND } from '../config'
-import type { Agent, AgentRating } from '../types'
+import { CACHE_TTL_MS, AGENTS_PER_PAGE } from '../config'
+import type { Agent } from '../types'
 
 interface Store {
   allAgents: Agent[]
@@ -15,12 +15,10 @@ interface Store {
   hasMoreOnChain: boolean
   cursor: Cursor | null
   lastFetchTime: number | null
-  ratings: Record<string, AgentRating>
 
   init: () => Promise<void>
   refresh: () => Promise<void>
   loadMore: () => Promise<void>
-  loadRatings: () => Promise<void>
 }
 
 function mergeAgents(existing: Agent[], incoming: Agent[]): Agent[] {
@@ -42,7 +40,6 @@ export const useStore = create<Store>()(
       hasMoreOnChain: true,
       cursor: null,
       lastFetchTime: null,
-      ratings: {},
 
       init: async () => {
         const { lastFetchTime, loading } = get()
@@ -101,17 +98,6 @@ export const useStore = create<Store>()(
         } finally {
           set({ loading: false })
         }
-      },
-
-      loadRatings: async () => {
-        if (!RATINGS_BACKEND) return
-        try {
-          const { default: axios } = await import('axios')
-          const { data } = await axios.get(`${RATINGS_BACKEND}/agents`)
-          const map: Record<string, AgentRating> = {}
-          for (const r of data) map[r.address] = { avgScore: r.avg_score, totalRatings: r.total_ratings }
-          set({ ratings: map })
-        } catch { /* ratings optional */ }
       },
     }),
     {

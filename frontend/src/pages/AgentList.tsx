@@ -3,20 +3,16 @@ import { useStore } from '../store/useStore'
 import { AgentItem } from '../components/AgentItem'
 
 export function AgentList() {
-  const { allAgents, visibleCount, loading, error, hasMoreOnChain, ratings, init, refresh, loadMore, loadRatings } = useStore()
+  const { allAgents, visibleCount, loading, error, hasMoreOnChain, init, refresh, loadMore } = useStore()
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [spinning, setSpinning] = useState(false)
 
-  useEffect(() => {
-    init()
-    loadRatings()
-  }, [])
+  useEffect(() => { init() }, [])
 
   async function handleRefresh() {
     if (loading || spinning) return
     setSpinning(true)
     await refresh()
-    await loadRatings()
     setSpinning(false)
   }
 
@@ -63,7 +59,6 @@ export function AgentList() {
               <AgentItem
                 key={agent.sidecarId}
                 agent={agent}
-                rating={ratings[agent.address]}
                 expanded={expandedId === agent.sidecarId}
                 onToggle={() => toggle(agent.sidecarId)}
               />
