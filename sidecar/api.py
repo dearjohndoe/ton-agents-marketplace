@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from aiohttp import web
 
@@ -30,8 +32,8 @@ class QuoteEntry:
 DEFAULT_QUOTE_TTL = 120  # seconds
 
 
-async def fetch_args_schema(command: str, timeout: int, sidecar_id: str) -> dict[str, Any]:
-    """Call the agent with mode=describe and return its args_schema."""
+async def fetch_describe(command: str, timeout: int, sidecar_id: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Call the agent with mode=describe and return (args_schema, result_schema)."""
     try:
         result = await run_agent_subprocess(
             command=command,
@@ -39,10 +41,13 @@ async def fetch_args_schema(command: str, timeout: int, sidecar_id: str) -> dict
             timeout_seconds=timeout,
             env={"OWN_SIDECAR_ID": sidecar_id},
         )
-        schema = result.get("args_schema")
-        if isinstance(schema, dict):
-            return schema
-        raise RuntimeError("Agent describe response missing valid args_schema")
+        args_schema = result.get("args_schema")
+        if not isinstance(args_schema, dict):
+            raise RuntimeError("Agent describe response missing valid args_schema")
+        result_schema = result.get("result_schema")
+        if result_schema is not None and not isinstance(result_schema, dict):
+            result_schema = None
+        return args_schema, result_schema
     except Exception as exc:
         logger.critical("Critical error: Agent failed to respond to describe mode: %s", exc)
         raise RuntimeError(f"Agent must return valid args_schema on startup. Error: {exc}")
@@ -64,6 +69,10 @@ class SidecarApp:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.args_schema: dict[str, Any] = {}
+        self.result_schema: dict[str, Any] | None = None
+        self._file_store: dict[str, dict[str, Any]] = {}
+        self._file_store_dir = Path(settings.file_store_dir)
+        self._file_store_ttl = settings.file_store_ttl
         self.jobs = JobStore(ttl_seconds=settings.jobs_ttl)
         self.tx_store = ProcessedTxStore(settings.tx_db_path)
         self.verifier = PaymentVerifier(
@@ -90,6 +99,7 @@ class SidecarApp:
                 description=settings.agent_description,
                 args_schema={},
                 has_quote=settings.has_quote,
+                result_schema=None,
             ),
             state_store=self.state_store,
             transfer_sender=self.sender.send,
@@ -124,11 +134,17 @@ class SidecarApp:
             self.state_store.save(state)
         self.sidecar_id = state.sidecar_id
 
-        self.args_schema = await fetch_args_schema(self.settings.agent_command, DESCRIBE_TIMEOUT, self.sidecar_id)
+        self.args_schema, self.result_schema = await fetch_describe(
+            self.settings.agent_command, DESCRIBE_TIMEOUT, self.sidecar_id,
+        )
         if self.args_schema:
             logger.info("Agent args_schema loaded: %s", list(self.args_schema.keys()))
         else:
             logger.info("Agent returned no args_schema; validation disabled")
+        if self.result_schema:
+            logger.info("Agent result_schema loaded: %s", self.result_schema)
+
+        self._file_store_dir.mkdir(parents=True, exist_ok=True)
 
         self.heartbeat = HeartbeatManager(
             config=HeartbeatConfig(
@@ -141,6 +157,7 @@ class SidecarApp:
                 args_schema=self.args_schema,
                 has_quote=self.settings.has_quote,
                 sidecar_id=self.sidecar_id,
+                result_schema=self.result_schema,
             ),
             state_store=self.state_store,
             transfer_sender=self.sender.send,
@@ -181,20 +198,85 @@ class SidecarApp:
     async def cleanup_loop(self) -> None:
         while not self.stop_event.is_set():
             await self.jobs.cleanup()
+            self._cleanup_expired_files()
             try:
                 await asyncio.wait_for(self.stop_event.wait(), timeout=60)
             except asyncio.TimeoutError:
                 pass
 
+    # ── File store helpers ──────────────────────────────────────────
+
+    _MIME_EXT: dict[str, str] = {
+        "image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif",
+        "image/webp": ".webp", "audio/wav": ".wav", "audio/mpeg": ".mp3",
+        "audio/ogg": ".ogg", "video/mp4": ".mp4", "video/webm": ".webm",
+        "application/pdf": ".pdf",
+    }
+
+    def _process_file_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        """If result is type=file with base64 data, store to disk and replace with download URL."""
+        if result.get("type") != "file" or "data" not in result:
+            return result
+
+        file_id = uuid.uuid4().hex
+        mime_type = result.get("mime_type", "application/octet-stream")
+        ext = self._MIME_EXT.get(mime_type, "")
+        file_name = result.get("file_name") or f"{file_id[:12]}{ext}"
+
+        file_bytes = base64.b64decode(result["data"])
+        file_path = self._file_store_dir / file_id
+        file_path.write_bytes(file_bytes)
+
+        expires_at = time.time() + self._file_store_ttl
+        self._file_store[file_id] = {
+            "path": str(file_path),
+            "mime_type": mime_type,
+            "file_name": file_name,
+            "expires_at": expires_at,
+        }
+
+        return {
+            "type": "file",
+            "url": f"/download/{file_id}",
+            "mime_type": mime_type,
+            "file_name": file_name,
+            "expires_in": self._file_store_ttl,
+        }
+
+    def _cleanup_file(self, file_id: str) -> None:
+        entry = self._file_store.pop(file_id, None)
+        if entry:
+            try:
+                Path(entry["path"]).unlink(missing_ok=True)
+            except Exception:
+                logger.warning("Failed to delete file %s", entry["path"])
+
+    def _cleanup_expired_files(self) -> None:
+        now = time.time()
+        expired = [fid for fid, entry in self._file_store.items() if entry["expires_at"] <= now]
+        for fid in expired:
+            self._cleanup_file(fid)
+
+    @staticmethod
+    def _validate_result_structure(raw: dict[str, Any]) -> None:
+        """Ensure agent result has the required {type, data} structure."""
+        result = raw.get("result")
+        if not isinstance(result, dict):
+            raise ValueError("Agent result must be a JSON object with 'type' and 'data' keys")
+        if "type" not in result or "data" not in result:
+            raise ValueError("Agent result must contain 'type' and 'data' keys")
+
     def _create_runner(self, agent_payload: dict[str, Any], sender: str, amount: int, tx_hash: str):
         async def runner() -> dict[str, Any]:
             try:
-                return await run_agent_subprocess(
+                raw = await run_agent_subprocess(
                     command=self.settings.agent_command,
                     payload=agent_payload,
                     timeout_seconds=self.settings.final_timeout,
                     env={"OWN_SIDECAR_ID": self.sidecar_id},
                 )
+                self._validate_result_structure(raw)
+                return raw
             except Exception as exc:
                 if isinstance(exc, TimeoutError):
                     short_reason = "timeout"
@@ -387,9 +469,9 @@ class SidecarApp:
             return web.json_response({"job_id": job_id, "status": "pending"})
 
         if record.status == "done":
-            # Unwrap the "result" dictionary returned by the agent, if present
-            # For backward compatibility or nested agent outputs.
             final_res = record.result.get("result", record.result) if isinstance(record.result, dict) else record.result
+            if isinstance(final_res, dict):
+                final_res = self._process_file_result(final_res)
             return web.json_response({"job_id": job_id, "status": "done", "result": final_res})
 
         if record.status == "error":
@@ -407,12 +489,36 @@ class SidecarApp:
 
         response: dict[str, Any] = {"status": record.status}
         if record.result is not None:
-            # Unwrap the "result" dictionary returned by the agent, if present
             final_res = record.result.get("result", record.result) if isinstance(record.result, dict) else record.result
+            if isinstance(final_res, dict):
+                final_res = self._process_file_result(final_res)
             response["result"] = final_res
         if record.error is not None:
             response["error"] = record.error
         return web.json_response(response)
+
+    async def handle_download(self, request: web.Request) -> web.Response:
+        file_id = request.match_info["file_id"]
+        entry = self._file_store.get(file_id)
+
+        if entry is None:
+            return web.json_response({"error": "File not found"}, status=404)
+
+        if time.time() > entry["expires_at"]:
+            self._cleanup_file(file_id)
+            return web.json_response({"error": "File expired"}, status=410)
+
+        file_path = Path(entry["path"])
+        if not file_path.exists():
+            return web.json_response({"error": "File not found on disk"}, status=404)
+
+        return web.Response(
+            body=file_path.read_bytes(),
+            content_type=entry["mime_type"],
+            headers={
+                "Content-Disposition": f'inline; filename="{entry["file_name"]}"',
+            },
+        )
 
     async def handle_info(self, _: web.Request) -> web.Response:
         from aiohttp import web
@@ -423,6 +529,7 @@ class SidecarApp:
             "capabilities": [self.settings.capability],
             "price": self.settings.agent_price,
             "args_schema": self.args_schema,
+            "result_schema": self.result_schema,
             "sidecar_id": self.sidecar_id,
         })
 
@@ -444,7 +551,7 @@ class SidecarApp:
 
         @web.middleware
         async def rate_limit_middleware(request: web.Request, handler):
-            if request.method == "OPTIONS" or request.path == "/info":
+            if request.method == "OPTIONS" or request.path == "/info" or request.path.startswith("/download/"):
                 return await handler(request)
                 
             ip = request.headers.get("X-Forwarded-For", request.remote)
@@ -480,6 +587,7 @@ class SidecarApp:
                 web.post("/invoke", self.handle_invoke),
                 web.post("/quote", self.handle_quote),
                 web.get("/result/{job_id}", self.handle_result),
+                web.get("/download/{file_id}", self.handle_download),
                 web.get("/info", self.handle_info),
             ]
         )

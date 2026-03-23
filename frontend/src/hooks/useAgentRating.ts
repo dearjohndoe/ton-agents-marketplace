@@ -5,11 +5,13 @@ const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
 const RATING_CACHE_TTL = 2 * 60 * 60 * 1000 // 2 hours
 
 const MOCK_RATINGS: Record<string, OnChainRating> = {
-  'EQBvW8Z5huBkMJYdnfAEM5JqTNkuWX3diqYENkWsIL0XggGG': { score: 8.4, totalTxs: 47, reviews: 3, status: 'ready' },
-  'EQDtFpEwcFAEcRe5mLVh2N6C2theRSmP5NFp6x61ZygPk4En': { score: 5.1, totalTxs: 12, reviews: 1, status: 'ready' },
-  'EQCkR1cGmwhNorL6jTA9OgDkgStRuACBkMxEMfbkIkNX0EK3': { score: 2.3, totalTxs: 8, reviews: 2, status: 'ready' },
-  'EQB3ncyBUTjZUA5EnFKR5_EnOMI9V1tTeDShu7XFBN3Eaacq': { score: null, totalTxs: 0, reviews: 0, status: 'empty' },
-  'EQA0i8-CdGnF_DhUHHf92R1ONH6sIA9vLZ_WLcCIhfBBXwtG': { score: null, totalTxs: 2, reviews: 0, status: 'new' },
+  'mock-1': { score: 8.4, totalTxs: 47, reviews: 3, status: 'ready' },
+  'mock-2': { score: 5.1, totalTxs: 12, reviews: 1, status: 'ready' },
+  'mock-3': { score: 2.3, totalTxs: 8, reviews: 2, status: 'ready' },
+  'mock-4': { score: null, totalTxs: 0, reviews: 0, status: 'empty' },
+  'mock-5': { score: null, totalTxs: 2, reviews: 0, status: 'new' },
+  'mock-6': { score: 7.1, totalTxs: 19, reviews: 2, status: 'ready' },
+  'mock-7': { score: null, totalTxs: 1, reviews: 0, status: 'new' },
 }
 
 interface CachedRating {
@@ -17,9 +19,9 @@ interface CachedRating {
   ts: number
 }
 
-function getCached(address: string): CachedRating | null {
+function getCached(sidecarId: string): CachedRating | null {
   try {
-    const raw = localStorage.getItem(`rating:${address}`)
+    const raw = localStorage.getItem(`rating:${sidecarId}`)
     if (!raw) return null
     const cached: CachedRating = JSON.parse(raw)
     if (Date.now() - cached.ts > RATING_CACHE_TTL) return null
@@ -29,8 +31,8 @@ function getCached(address: string): CachedRating | null {
   }
 }
 
-function setCache(address: string, data: OnChainRating) {
-  localStorage.setItem(`rating:${address}`, JSON.stringify({ data, ts: Date.now() }))
+function setCache(sidecarId: string, data: OnChainRating) {
+  localStorage.setItem(`rating:${sidecarId}`, JSON.stringify({ data, ts: Date.now() }))
 }
 
 export function useAgentRating(agentAddress: string, sidecarId: string, enabled: boolean) {
@@ -40,7 +42,7 @@ export function useAgentRating(agentAddress: string, sidecarId: string, enabled:
 
   const load = useCallback(async (force = false) => {
     if (!force) {
-      const cached = getCached(agentAddress)
+      const cached = getCached(sidecarId)
       if (cached) {
         setRating(cached.data)
         return
@@ -52,13 +54,13 @@ export function useAgentRating(agentAddress: string, sidecarId: string, enabled:
     try {
       if (USE_MOCK) {
         await new Promise(r => setTimeout(r, 600))
-        const data = MOCK_RATINGS[agentAddress] ?? { score: null, totalTxs: 0, reviews: 0, status: 'empty' as const }
+        const data = MOCK_RATINGS[sidecarId] ?? { score: null, totalTxs: 0, reviews: 0, status: 'empty' as const }
         setRating(data)
-        setCache(agentAddress, data)
+        setCache(sidecarId, data)
       } else {
         const data = await fetchOnChainRating(agentAddress, sidecarId)
         setRating(data)
-        setCache(agentAddress, data)
+        setCache(sidecarId, data)
       }
     } catch {
       setError(true)

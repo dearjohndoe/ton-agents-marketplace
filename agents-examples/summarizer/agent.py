@@ -25,7 +25,7 @@ def main():
     task = json.load(sys.stdin)
 
     if task.get("mode") == "describe":
-        print(json.dumps({"args_schema": ARGS_SCHEMA}))
+        print(json.dumps({"args_schema": ARGS_SCHEMA, "result_schema": {"type": "string"}}))
         return
 
     body = task.get("body") or {}
@@ -46,7 +46,7 @@ def main():
     )
     response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
 
-    print(json.dumps({"result": response.text.strip()}))
+    print(json.dumps({"result": {"type": "string", "data": response.text.strip()}}))
 
 
 if __name__ == "__main__":

@@ -62,7 +62,7 @@ def main():
     task = json.load(sys.stdin)
 
     if task.get("mode") == "describe":
-        print(json.dumps({"args_schema": ARGS_SCHEMA}))
+        print(json.dumps({"args_schema": ARGS_SCHEMA, "result_schema": {"type": "file", "mime_type": "audio/wav"}}))
         return
 
     body = task.get("body") or {}
@@ -76,7 +76,12 @@ def main():
         rate = int(rate)
 
     audio_b64 = synthesize(text, rate)
-    print(json.dumps({"result": {"audio_base64": audio_b64, "format": "wav"}}))
+    print(json.dumps({"result": {
+        "type": "file",
+        "data": audio_b64,
+        "mime_type": "audio/wav",
+        "file_name": "speech.wav",
+    }}))
 
 
 if __name__ == "__main__":

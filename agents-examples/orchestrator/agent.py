@@ -267,17 +267,14 @@ async def handle_execute(task: str, quote_id: str) -> dict:
             step_data["error"] = sr.error
         steps_output.append(step_data)
 
-    response: dict = {
-        "result": {
-            "steps": steps_output,
-            "final": result.final,
-        }
+    data: dict = {
+        "steps": steps_output,
+        "final": result.final,
     }
-
     if result.refund_to_user > 0:
-        response["result"]["refund_nanotons"] = result.refund_to_user
+        data["refund_nanotons"] = result.refund_to_user
 
-    return response
+    return {"result": {"type": "json", "data": data}}
 
 
 def main() -> None:
@@ -285,7 +282,7 @@ def main() -> None:
     mode = task_input.get("mode", "")
 
     if mode == "describe":
-        print(json.dumps({"args_schema": ARGS_SCHEMA}))
+        print(json.dumps({"args_schema": ARGS_SCHEMA, "result_schema": {"type": "json"}}))
         return
 
     body = task_input.get("body") or {}

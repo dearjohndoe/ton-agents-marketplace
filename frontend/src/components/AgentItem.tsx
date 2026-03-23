@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { useTonConnectUI, useTonAddress } from '@tonconnect/ui-react'
 import { Address } from '@ton/core'
-import { invokeAgent, pollResult, fetchQuote, invokePreflight, getConnectionMode, checkGatewayHealth } from '../lib/agentClient'
+import { invokeAgent, pollResult, fetchQuote, invokePreflight, getConnectionMode, checkGatewayHealth, resolveDownloadUrl } from '../lib/agentClient'
 import type { QuoteResult, PaymentRequest, ConnectionMode } from '../lib/agentClient'
+import { ResultRenderer } from './ResultRenderer'
 import { buildPaymentPayload, bocToMsgHash, buildRatingPayload } from '../lib/crypto'
 import type { Agent, AgentRating } from '../types'
 import { TESTNET } from '../config'
@@ -23,14 +24,6 @@ function nanoToTon(n: number) {
   return t < 0.001 ? t.toExponential(2) : t.toFixed(3).replace(/\.?0+$/, '')
 }
 
-function timeAgo(ts: number) {
-  const s = Math.floor(Date.now() / 1000) - ts
-  if (s < 60) return 'just now'
-  if (s < 3600) return `${Math.floor(s / 60)} min. ago`
-  if (s < 86400) return `${Math.floor(s / 3600)} h. ago`
-  return `${Math.floor(s / 86400)} d. ago`
-}
-
 const connLabel: Record<ConnectionMode, string> = {
   direct: 'https',
   proxy: 'via proxy',
@@ -46,6 +39,41 @@ function ConnectionBadge({ mode }: { mode: ConnectionMode }) {
     mode === 'direct' ? 'Direct encrypted connection' :
     mode === 'proxy' ? 'Routed through SSL gateway' : 'Connection is not encrypted'
   }>{connLabel[mode]}</span>
+}
+
+function formatAddr(raw: string): string {
+  try {
+    const friendly = Address.parse(raw).toString({ bounceable: false, urlSafe: true, testOnly: TESTNET })
+    return `${friendly.slice(0, 7)}…${friendly.slice(-7)}`
+  } catch {
+    return `${raw.slice(0, 7)}…${raw.slice(-7)}`
+  }
+}
+
+function friendlyAddr(raw: string): string {
+  try {
+    return Address.parse(raw).toString({ bounceable: false, urlSafe: true, testOnly: TESTNET })
+  } catch {
+    return raw
+  }
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  function handleCopy() {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }
+  return (
+    <button className="copy-btn" onClick={handleCopy} title="Copy address">
+      {copied
+        ? <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2 6.5l3.5 3.5 5.5-6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+        : <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><rect x="4.5" y="1" width="7.5" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.3"/><path d="M1 4.5h3m-3 0V12h8V9.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>
+      }
+    </button>
+  )
 }
 
 export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
@@ -249,8 +277,16 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
               <ConnectionBadge mode={connMode} />
             </div>
             <div className="meta-item">
-              <span className="meta-label">Last heartbeat</span>
-              <span>{timeAgo(agent.lastHeartbeat)}</span>
+              <span className="meta-label">Wallet</span>
+              <a
+                href={`https://${TESTNET ? 'testnet.' : ''}tonviewer.com/${friendlyAddr(agent.address)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="link meta-addr"
+              >
+                {formatAddr(agent.address)}
+              </a>
+              <CopyButton text={friendlyAddr(agent.address)} />
             </div>
           </div>
 
@@ -262,7 +298,10 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
           ) : status === 'done' && result ? (
             <div className="result-box">
               <span className="meta-label">Result</span>
-              <pre className="result-content">{typeof result === 'string' ? result : JSON.stringify(result, null, 2)}</pre>
+              <ResultRenderer
+                result={result}
+                downloadUrl={(path) => resolveDownloadUrl(agent.endpoint, path)}
+              />
 
               {reviewStatus === 'sent' ? (
                 <div className="review-done">

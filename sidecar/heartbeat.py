@@ -26,6 +26,7 @@ class HeartbeatConfig:
     args_schema: dict[str, Any]
     has_quote: bool = False
     sidecar_id: str | None = None
+    result_schema: dict[str, Any] | None = None
 
 
 class HeartbeatManager:
@@ -56,6 +57,8 @@ class HeartbeatManager:
             payload["has_quote"] = True
         if self._config.sidecar_id:
             payload["sidecar_id"] = self._config.sidecar_id
+        if self._config.result_schema:
+            payload["result_schema"] = self._config.result_schema
         return payload
 
     def _should_send_now(self, state: SidecarState) -> bool:
