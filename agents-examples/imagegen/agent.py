@@ -24,7 +24,7 @@ def main():
     task = json.load(sys.stdin)
 
     if task.get("mode") == "describe":
-        print(json.dumps({"args_schema": ARGS_SCHEMA}))
+        print(json.dumps({"args_schema": ARGS_SCHEMA, "result_schema": {"type": "file", "mime_type": "image/png"}}))
         return
 
     prompt = (task.get("body") or {}).get("prompt", "").strip()
@@ -42,10 +42,12 @@ def main():
     )
     image_bytes = response.generated_images[0].image.image_bytes
 
-    RESULTS_DIR.mkdir(exist_ok=True)
-    (RESULTS_DIR / f"{uuid.uuid4()}.png").write_bytes(image_bytes)
-
-    print(json.dumps({"result": {"image_base64": base64.b64encode(image_bytes).decode(), "format": "png"}}))
+    print(json.dumps({"result": {
+        "type": "file",
+        "data": base64.b64encode(image_bytes).decode(),
+        "mime_type": "image/png",
+        "file_name": f"{uuid.uuid4()}.png",
+    }}))
 
 
 if __name__ == "__main__":

@@ -80,7 +80,7 @@ def main():
     task = json.load(sys.stdin)
 
     if task.get("mode") == "describe":
-        print(json.dumps({"args_schema": ARGS_SCHEMA}))
+        print(json.dumps({"args_schema": ARGS_SCHEMA, "result_schema": {"type": "bagid"}}))
         return
 
     body = task.get("body") or {}
@@ -133,17 +133,7 @@ def main():
     finally:
         conn.close()
 
-    print(
-        json.dumps(
-            {
-                "result": {
-                    "bag_id": bag_id,
-                    "type": "bagid",
-                    "expires_at": expires_at.isoformat(),
-                }
-            }
-        )
-    )
+    print(json.dumps({"result": {"type": "bagid", "data": bag_id}}))
 
 
 if __name__ == "__main__":
