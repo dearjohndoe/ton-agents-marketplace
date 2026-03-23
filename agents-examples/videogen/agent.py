@@ -47,6 +47,10 @@ def main():
         time.sleep(10)
         operation = client.operations.get(operation)
 
+    if not operation.result or not operation.result.generated_videos:
+        reason = getattr(operation, "error", None) or getattr(operation.result, "prompt_feedback", None) if operation.result else None
+        raise RuntimeError(f"Video generation returned no results: {reason}" if reason else
+                           "Video generation returned no results — the prompt may have been blocked by content policy")
     video = operation.result.generated_videos[0].video
     client.files.download(file=video)
     video_bytes = video.video_bytes

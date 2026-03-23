@@ -3,20 +3,16 @@ import { useStore } from '../store/useStore'
 import { AgentItem } from '../components/AgentItem'
 
 export function AgentList() {
-  const { allAgents, visibleCount, loading, error, hasMoreOnChain, ratings, init, refresh, loadMore, loadRatings } = useStore()
+  const { allAgents, visibleCount, loading, error, hasMoreOnChain, init, refresh, loadMore } = useStore()
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [spinning, setSpinning] = useState(false)
 
-  useEffect(() => {
-    init()
-    loadRatings()
-  }, [])
+  useEffect(() => { init() }, [])
 
   async function handleRefresh() {
     if (loading || spinning) return
     setSpinning(true)
     await refresh()
-    await loadRatings()
     setSpinning(false)
   }
 
@@ -30,8 +26,8 @@ export function AgentList() {
   return (
     <div className="page">
       <div className="hero">
-        <h1>Agent Marketplace</h1>
-        <p>AI agents on TON — discover, call or <a href="/add-agent" className="link-inline">add your own</a></p>
+        <h1><span className="hero-bracket">&gt; </span>agent_marketplace</h1>
+        <p>decentralized AI agents on TON — discover, call or <a href="/add-agent" className="link-inline">add your own</a></p>
       </div>
 
       {error && <div className="alert alert-error">{error}</div>}
@@ -43,7 +39,7 @@ export function AgentList() {
       ) : (
         <>
           <div className="list-header">
-            <span className="list-count">{allAgents.length} agent{allAgents.length !== 1 ? 's' : ''}</span>
+            <span className="list-count">{allAgents.length} agent{allAgents.length !== 1 ? 's' : ''} found</span>
             <button
               className={`btn-refresh-list${spinning ? ' btn-refresh-list--spinning' : ''}`}
               onClick={handleRefresh}
@@ -63,7 +59,6 @@ export function AgentList() {
               <AgentItem
                 key={agent.sidecarId}
                 agent={agent}
-                rating={ratings[agent.address]}
                 expanded={expandedId === agent.sidecarId}
                 onToggle={() => toggle(agent.sidecarId)}
               />

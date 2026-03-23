@@ -6,7 +6,7 @@ import logging
 import aiosqlite
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -276,7 +276,7 @@ class PaymentVerifier:
                     raise PaymentVerificationError("Payment session expired")
 
                 try:
-                    sender = str(tx.in_msg.info.src)
+                    sender = tx.in_msg.info.src.to_str(is_user_friendly=True, is_bounceable=False)
                 except Exception:
                     sender = ""
 

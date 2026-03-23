@@ -36,7 +36,7 @@ function setCache(sidecarId: string, data: OnChainRating) {
 }
 
 export function useAgentRating(agentAddress: string, sidecarId: string, enabled: boolean) {
-  const [rating, setRating] = useState<OnChainRating | null>(null)
+  const [rating, setRating] = useState<OnChainRating | null>(() => getCached(sidecarId)?.data ?? null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(false)
 

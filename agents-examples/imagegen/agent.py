@@ -40,6 +40,10 @@ def main():
         prompt=prompt,
         config=types.GenerateImagesConfig(number_of_images=1),
     )
+    if not response.generated_images:
+        reason = getattr(response, "prompt_feedback", None) or getattr(response, "filters", None)
+        raise RuntimeError(f"Image generation returned no images: {reason}" if reason else
+                           "Image generation returned no images — the prompt may have been blocked by content policy")
     image_bytes = response.generated_images[0].image.image_bytes
 
     print(json.dumps({"result": {

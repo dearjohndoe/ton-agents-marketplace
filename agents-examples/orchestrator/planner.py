@@ -56,7 +56,8 @@ Rules:
 - Return a JSON array of steps. Each step: {{"sidecar_id": "...", "body": {{...}}}}
 - Fill in the body fields according to each agent's args schema.
 - To reference the output of a previous step, use {{{{step_N.result}}}} where N is the 0-based step index.
-- Choose the most cost-effective route when multiple agents can do the same thing.
+- Choose the most cost-effective route when multiple(or single) agents can do the same thing. 
+- Don't use expensive agents for simple tasks and do not overcomplicate the chain.
 - If the task is impossible with the available agents, return: {{"error": "brief reason"}}
 - Return ONLY valid JSON, no explanations or markdown."""
 
@@ -120,6 +121,9 @@ async def plan_chain(
 
     prompt = _build_prompt(agents, task)
 
+    logger.info("Planning chain for task: %s", task)
+    logger.debug("LLM prompt:\n%s", prompt)
+    
     try:
         from google import genai
         client = genai.Client(api_key=gemini_api_key)
@@ -129,6 +133,8 @@ async def plan_chain(
         logger.exception("Gemini call failed")
         return PlanResult(error=f"LLM call failed: {exc}")
 
+    logger.info("Raw LLM response: %s", raw[:500])
+    
     try:
         parsed = _parse_llm_response(raw)
     except json.JSONDecodeError:

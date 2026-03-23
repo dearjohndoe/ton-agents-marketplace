@@ -9,7 +9,6 @@ export interface Cursor {
   lt: string
 }
 
-
 function parseHeartbeatTx(tx: any): Agent | null {
   try {
     const msg = tx.in_msg

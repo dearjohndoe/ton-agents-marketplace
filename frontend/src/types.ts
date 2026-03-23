@@ -35,7 +35,3 @@ export interface Agent {
   resultSchema?: ResultSchema
 }
 
-export interface AgentRating {
-  avgScore: number
-  totalRatings: number
-}

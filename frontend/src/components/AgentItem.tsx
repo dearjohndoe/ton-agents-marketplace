@@ -1,23 +1,21 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState } from 'react'
 import { useTonConnectUI, useTonAddress } from '@tonconnect/ui-react'
 import { Address } from '@ton/core'
-import { invokeAgent, pollResult, fetchQuote, invokePreflight, getConnectionMode, checkGatewayHealth, resolveDownloadUrl } from '../lib/agentClient'
-import type { QuoteResult, PaymentRequest, ConnectionMode } from '../lib/agentClient'
+import { resolveDownloadUrl } from '../lib/agentClient'
+import type { ConnectionMode } from '../lib/agentClient'
 import { ResultRenderer } from './ResultRenderer'
-import { buildPaymentPayload, bocToMsgHash, buildRatingPayload } from '../lib/crypto'
-import type { Agent, AgentRating } from '../types'
+import type { Agent, ArgSchema } from '../types'
 import { TESTNET } from '../config'
 import { useAgentRating } from '../hooks/useAgentRating'
+import { useAgentCall } from '../hooks/useAgentCall'
+import { useAgentReview } from '../hooks/useAgentReview'
 import { RatingBlock } from './RatingBlock'
 
 interface Props {
   agent: Agent
-  rating?: AgentRating
   expanded: boolean
   onToggle: () => void
 }
-
-type CallStatus = 'idle' | 'quoting' | 'quoted' | 'paying' | 'invoking' | 'polling' | 'done' | 'error'
 
 function nanoToTon(n: number) {
   const t = n / 1e9
@@ -25,15 +23,12 @@ function nanoToTon(n: number) {
 }
 
 const connLabel: Record<ConnectionMode, string> = {
-  direct: 'https',
-  proxy: 'via proxy',
-  insecure: 'http',
+  direct: 'https', proxy: 'via proxy', insecure: 'http',
 }
 const connClass: Record<ConnectionMode, string> = {
-  direct: 'conn-badge--ok',
-  proxy: 'conn-badge--proxy',
-  insecure: 'conn-badge--warn',
+  direct: 'conn-badge--ok', proxy: 'conn-badge--proxy', insecure: 'conn-badge--warn',
 }
+
 function ConnectionBadge({ mode }: { mode: ConnectionMode }) {
   return <span className={`conn-badge ${connClass[mode]}`} title={
     mode === 'direct' ? 'Direct encrypted connection' :
@@ -76,167 +71,59 @@ function CopyButton({ text }: { text: string }) {
   )
 }
 
-export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
+function InputFields({ schema, fields, setFields, disabled }: {
+  schema: Record<string, ArgSchema>
+  fields: Record<string, string>
+  setFields: React.Dispatch<React.SetStateAction<Record<string, string>>>
+  disabled: boolean
+}) {
+  if (Object.keys(schema).length === 0) {
+    return <p className="state-msg state-msg--sm">No schema available</p>
+  }
+  return <>
+    {Object.entries(schema).map(([name, arg]) => (
+      <div key={name} className="field">
+        <label>
+          {name}{arg.required && <span className="required">*</span>}
+          {arg.description && <span className="field-desc">{arg.description}</span>}
+        </label>
+        {arg.type === 'boolean' ? (
+          <select value={fields[name] ?? 'false'} disabled={disabled}
+            onChange={e => setFields(f => ({ ...f, [name]: e.target.value }))}>
+            <option value="true">true</option>
+            <option value="false">false</option>
+          </select>
+        ) : arg.type === 'number' ? (
+          <input type="number"
+            value={fields[name] ?? ''} required={arg.required} disabled={disabled}
+            onChange={e => setFields(f => ({ ...f, [name]: e.target.value }))} />
+        ) : (
+          <textarea rows={3}
+            value={fields[name] ?? ''} required={arg.required} disabled={disabled}
+            onChange={e => setFields(f => ({ ...f, [name]: e.target.value }))} />
+        )}
+      </div>
+    ))}
+  </>
+}
+
+export function AgentItem({ agent, expanded, onToggle }: Props) {
   const [tonConnectUI] = useTonConnectUI()
   const walletAddress = useTonAddress()
 
-  const [fields, setFields] = useState<Record<string, string>>({})
-  const [status, setStatus] = useState<CallStatus>('idle')
-  const [result, setResult] = useState<any>(null)
-  const [errorMsg, setErrorMsg] = useState('')
-  const [quote, setQuote] = useState<QuoteResult | null>(null)
-  const [quoteSecondsLeft, setQuoteSecondsLeft] = useState(0)
-  const [reviewScore, setReviewScore] = useState(0)
-  const [reviewHover, setReviewHover] = useState(0)
-  const [reviewStatus, setReviewStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle')
-  const [lastNonce, setLastNonce] = useState('')
-  const [connMode, setConnMode] = useState<ConnectionMode>(() => getConnectionMode(agent.endpoint))
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  // Re-check gateway health each time the card is expanded
-  useEffect(() => {
-    if (!expanded) return
-    checkGatewayHealth().then(() => {
-      setConnMode(getConnectionMode(agent.endpoint))
-    })
-  }, [expanded, agent.endpoint])
-
-  useEffect(() => {
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current)
-      if (countdownRef.current) clearInterval(countdownRef.current)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (status !== 'quoted' || !quote) return
-    const update = () => {
-      const left = Math.max(0, quote.expiresAt - Math.floor(Date.now() / 1000))
-      setQuoteSecondsLeft(left)
-    }
-    update()
-    countdownRef.current = setInterval(update, 1000)
-    return () => { if (countdownRef.current) clearInterval(countdownRef.current) }
-  }, [status, quote])
-
-  const inputSchema = agent.argsSchema
-
-  function buildBody(): Record<string, string | number | boolean> {
-    const body: Record<string, string | number | boolean> = {}
-    for (const [k, v] of Object.entries(fields)) {
-      const s = inputSchema[k]
-      if (!s) continue
-      body[k] = s.type === 'number' ? Number(v) : s.type === 'boolean' ? v === 'true' : v
-    }
-    return body
-  }
-
-  async function handleGetQuote(e: React.FormEvent) {
-    e.preventDefault()
-    setStatus('quoting')
-    setErrorMsg('')
-    setQuote(null)
-    try {
-      const q = await fetchQuote(agent.endpoint, agent.capabilities[0] ?? '', buildBody())
-      setQuote(q)
-      if (q.plan && typeof q.plan === 'object' && 'quote_id' in q.plan) {
-        const planQuoteId = (q.plan as { quote_id: string }).quote_id
-        setFields(f => ({ ...f, quote_id: planQuoteId }))
-      }
-      setStatus('quoted')
-    } catch (err: any) {
-      setStatus('error')
-      setErrorMsg(err?.response?.data?.error ?? err?.message ?? 'Failed to get quote')
-    }
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    setStatus('paying')
-    setErrorMsg('')
-    setResult(null)
-
-    const body = buildBody()
-    let paymentRequest: PaymentRequest
-    
-    try {
-      paymentRequest = await invokePreflight(agent.endpoint, agent.capabilities[0] ?? '', body, quote?.quoteId)
-    } catch (err: any) {
-      setStatus('error')
-      setErrorMsg(err?.message ?? 'Failed to reach agent')
-      return
-    }
-
-    setLastNonce(paymentRequest.nonce)
-
-    let txBoc: string
-    try {
-      const recipientAddress = Address.parse(paymentRequest.address).toString({ bounceable: false, urlSafe: true, testOnly: TESTNET })
-      const res = await tonConnectUI.sendTransaction({
-        validUntil: Math.floor(Date.now() / 1000) + 300,
-        messages: [{ address: recipientAddress, amount: paymentRequest.amount, payload: buildPaymentPayload(paymentRequest.nonce) }],
-      })
-      txBoc = bocToMsgHash(res.boc)
-    } catch (err: any) {
-      setStatus('error')
-      setErrorMsg(err?.message === 'Reject request' ? 'Payment cancelled' : 'Payment failed')
-      return
-    }
-
-    setStatus('invoking')
-    try {
-      const res = await invokeAgent(agent.endpoint, txBoc, paymentRequest.nonce, agent.capabilities[0] ?? '', body, quote?.quoteId)
-
-      if (res.status === 'done') {
-        setResult(res.result); setStatus('done')
-      } else if (res.status === 'error') {
-        setStatus('error'); setErrorMsg(res.error ?? 'Agent returned an error')
-      } else {
-        setStatus('polling')
-        pollRef.current = setInterval(async () => {
-          try {
-            const r = await pollResult(agent.endpoint, res.jobId)
-            if (r.status !== 'pending') {
-              clearInterval(pollRef.current!)
-              if (r.status === 'done') { setResult(r.result); setStatus('done') }
-              else { setStatus('error'); setErrorMsg(r.error ?? 'Error') }
-            }
-          } catch { clearInterval(pollRef.current!); setStatus('error'); setErrorMsg('Connection lost') }
-        }, 2000)
-      }
-    } catch (err: any) {
-      setStatus('error')
-      setErrorMsg(err?.response?.data?.error ?? err?.message ?? 'Failed to call agent')
-    }
-  }
-
-  async function handleReview() {
-    if (!reviewScore || reviewStatus === 'sending') return
-    setReviewStatus('sending')
-    try {
-      const agentAddr = Address.parse(agent.address).toString({ bounceable: false, urlSafe: true, testOnly: TESTNET })
-      await tonConnectUI.sendTransaction({
-        validUntil: Math.floor(Date.now() / 1000) + 300,
-        messages: [{
-          address: agentAddr,
-          amount: '10000000',
-          payload: buildRatingPayload(agent.sidecarId, lastNonce, reviewScore),
-        }],
-      })
-      setReviewStatus('sent')
-      // TODO: decrease when transactions become faster
-      setTimeout(() => ratingRefresh(), 8000)
-    } catch (err: any) {
-      setReviewStatus(err?.message === 'Reject request' ? 'idle' : 'error')
-    }
-  }
-
-  const busy = status === 'quoting' || status === 'paying' || status === 'invoking' || status === 'polling'
-  const hasSchema = Object.keys(inputSchema).length > 0
+  const call = useAgentCall(agent, expanded, tonConnectUI)
+  const { rating: onChainRating, loading: ratingLoading, error: ratingError, refresh: ratingRefresh } = useAgentRating(agent.address, agent.sidecarId, expanded)
+  const review = useAgentReview(agent, call.lastNonce, tonConnectUI, ratingRefresh)
 
   const isLive = (Date.now() / 1000 - agent.lastHeartbeat) < 300
-  const { rating: onChainRating, loading: ratingLoading, error: ratingError, refresh: ratingRefresh } = useAgentRating(agent.address, agent.sidecarId, expanded)
+
+  function handleReset() {
+    call.reset()
+    review.resetReview()
+  }
+
+  const inQuoteFlow = agent.hasQuote && ['quoted', 'paying', 'invoking', 'polling'].includes(call.status)
+  const fieldsDisabled = call.busy || (agent.hasQuote === true && call.status === 'quoted')
 
   return (
     <div className={`agent-item ${expanded ? 'agent-item--open' : ''}`}>
@@ -259,7 +146,7 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
         </div>
       </button>
 
-      {/* Summary — always visible: compact rating + description */}
+      {/* Summary — always visible */}
       {(onChainRating || ratingLoading || ratingError || agent.description) && (
         <div className="agent-summary" onClick={onToggle}>
           <RatingBlock rating={onChainRating} loading={ratingLoading} error={ratingError} onRefresh={ratingRefresh} />
@@ -274,15 +161,13 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
             <div className="meta-item">
               <span className="meta-label">Endpoint</span>
               <a href={agent.endpoint} target="_blank" rel="noopener noreferrer" className="link">{agent.endpoint}</a>
-              <ConnectionBadge mode={connMode} />
+              <ConnectionBadge mode={call.connMode} />
             </div>
             <div className="meta-item">
               <span className="meta-label">Wallet</span>
               <a
                 href={`https://${TESTNET ? 'testnet.' : ''}tonviewer.com/${friendlyAddr(agent.address)}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="link meta-addr"
+                target="_blank" rel="noopener noreferrer" className="link meta-addr"
               >
                 {formatAddr(agent.address)}
               </a>
@@ -292,94 +177,65 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
 
           <div className="agent-divider" />
 
-          {/* Call form */}
           {!walletAddress ? (
             <div className="alert alert-info">Connect your wallet to call this agent.</div>
-          ) : status === 'done' && result ? (
+          ) : call.status === 'done' && call.result ? (
             <div className="result-box">
               <span className="meta-label">Result</span>
-              <ResultRenderer
-                result={result}
-                downloadUrl={(path) => resolveDownloadUrl(agent.endpoint, path)}
-              />
+              <ResultRenderer result={call.result} downloadUrl={(path) => resolveDownloadUrl(agent.endpoint, path)} />
 
-              {reviewStatus === 'sent' ? (
+              {review.reviewStatus === 'sent' ? (
                 <div className="review-done">
                   <span className="review-done-icon">✓</span>
                   <span>Thanks! Your rating is on its way on-chain.</span>
                 </div>
               ) : (
                 <div className="review-cta">
-                  <p className="review-cta-text">
-                    Enjoyed the result? Rate this agent to help others discover quality services.
-                  </p>
+                  <p className="review-cta-text">Enjoyed the result? Rate this agent to help others discover quality services.</p>
                   <div className="review-stars">
                     {[1, 2, 3, 4, 5].map(s => (
-                      <button
-                        key={s}
-                        type="button"
-                        className={`review-star ${s <= (reviewHover || reviewScore) ? 'review-star--active' : ''}`}
-                        onMouseEnter={() => setReviewHover(s)}
-                        onMouseLeave={() => setReviewHover(0)}
-                        onClick={() => setReviewScore(s)}
-                        disabled={reviewStatus === 'sending'}
-                      >
+                      <button key={s} type="button"
+                        className={`review-star ${s <= (review.reviewHover || review.reviewScore) ? 'review-star--active' : ''}`}
+                        onMouseEnter={() => review.setReviewHover(s)}
+                        onMouseLeave={() => review.setReviewHover(0)}
+                        onClick={() => review.setReviewScore(s)}
+                        disabled={review.reviewStatus === 'sending'}>
                         ★
                       </button>
                     ))}
                   </div>
-                  {reviewScore > 0 && (
-                    <button
-                      className="btn btn-review"
-                      onClick={handleReview}
-                      disabled={reviewStatus === 'sending'}
-                    >
-                      {reviewStatus === 'sending' ? 'Submitting…' : 'Submit Rating · 0.01 TON'}
+                  {review.reviewScore > 0 && (
+                    <button className="btn btn-review" onClick={review.handleReview} disabled={review.reviewStatus === 'sending'}>
+                      {review.reviewStatus === 'sending' ? 'Submitting…' : 'Submit Rating · 0.01 TON'}
                     </button>
                   )}
-                  {reviewStatus === 'error' && (
+                  {review.reviewStatus === 'error' && (
                     <p className="review-error">Failed to submit. Try again?</p>
                   )}
                 </div>
               )}
 
-              <button className="btn btn-outline btn-sm" onClick={() => { setStatus('idle'); setResult(null); setQuote(null); setReviewScore(0); setReviewStatus('idle'); setLastNonce('') }}>
-                Call again
-              </button>
+              <button className="btn btn-outline btn-sm" onClick={handleReset}>Call again</button>
             </div>
-          ) : agent.hasQuote ? (
-            <form onSubmit={status === 'quoted' ? handleSubmit : handleGetQuote} className="call-form">
-              {errorMsg && <div className="alert alert-error">{errorMsg}</div>}
+          ) : (
+            <form
+              onSubmit={agent.hasQuote && call.status !== 'quoted' ? call.handleGetQuote : call.handleSubmit}
+              className="call-form"
+            >
+              {call.errorMsg && <div className="alert alert-error">{call.errorMsg}</div>}
 
-              {hasSchema ? (
-                Object.entries(inputSchema).map(([name, arg]) => (
-                  <div key={name} className="field">
-                    <label>
-                      {name}{arg.required && <span className="required">*</span>}
-                      {arg.description && <span className="field-desc">{arg.description}</span>}
-                    </label>
-                    {arg.type === 'boolean' ? (
-                      <select value={fields[name] ?? 'false'} disabled={busy}
-                        onChange={e => setFields(f => ({ ...f, [name]: e.target.value }))}>
-                        <option value="true">true</option>
-                        <option value="false">false</option>
-                      </select>
-                    ) : (
-                      <input type={arg.type === 'number' ? 'number' : 'text'}
-                        value={fields[name] ?? ''} required={arg.required} disabled={busy || status === 'quoted'}
-                        onChange={e => setFields(f => ({ ...f, [name]: e.target.value }))} />
-                    )}
-                  </div>
-                ))
-              ) : (
-                <p className="state-msg state-msg--sm">No schema available</p>
-              )}
+              <InputFields
+                schema={agent.argsSchema}
+                fields={call.fields}
+                setFields={call.setFields}
+                disabled={fieldsDisabled}
+              />
 
-              {status === 'quoted' && quote && (
+              {agent.hasQuote && call.status === 'quoted' && call.quote && (
                 <div className="quote-box">
-                  {quote.plan && typeof quote.plan === 'object' && 'steps' in quote.plan && (
+                  {call.quote.plan && typeof call.quote.plan === 'object' && 'steps' in call.quote.plan && (
                     <div className="quote-plan">
-                      {quote.plan.steps.map((s, i) => (
+                      {call.quote.plan.steps.map((s, i) => (
                         <div key={i} className="quote-step">
                           <span className="quote-step-num">{s.step + 1}</span>
                           <span className="quote-step-agent">{s.agent}</span>
@@ -389,72 +245,43 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
                       ))}
                     </div>
                   )}
-                  {quote.plan && typeof quote.plan === 'string' && quote.plan && (
-                    <div className="quote-plan">{quote.plan}</div>
+                  {call.quote.plan && typeof call.quote.plan === 'string' && call.quote.plan && (
+                    <div className="quote-plan">{call.quote.plan}</div>
                   )}
                   <div className="quote-meta">
-                    <span className="quote-price">{nanoToTon(quote.price)} TON</span>
-                    <span className={`quote-timer ${quoteSecondsLeft === 0 ? 'quote-timer--expired' : ''}`}>
-                      {quoteSecondsLeft > 0 ? `Expires in ${quoteSecondsLeft}s` : 'Quote expired'}
+                    <span className="quote-price">{nanoToTon(call.quote.price)} TON</span>
+                    <span className={`quote-timer ${call.quoteSecondsLeft === 0 ? 'quote-timer--expired' : ''}`}>
+                      {call.quoteSecondsLeft > 0 ? `Expires in ${call.quoteSecondsLeft}s` : 'Quote expired'}
                     </span>
                   </div>
                 </div>
               )}
 
-              {['quoted', 'paying', 'invoking', 'polling'].includes(status) ? (
+              {inQuoteFlow ? (
                 <div className="quote-actions">
-                  <button type="submit" className="btn btn-primary" disabled={busy || quoteSecondsLeft === 0}>
-                    {status === 'paying' ? 'Waiting for payment…'
-                      : status === 'invoking' ? 'Calling agent…'
-                      : status === 'polling' ? 'Waiting for result…'
-                      : quoteSecondsLeft === 0 ? 'Quote expired'
-                      : `Approve & Pay ${nanoToTon(quote!.price)} TON`}
+                  <button type="submit" className="btn btn-primary" disabled={call.busy || call.quoteSecondsLeft === 0}>
+                    {call.status === 'paying' ? 'Waiting for payment…'
+                      : call.status === 'invoking' ? 'Calling agent…'
+                      : call.status === 'polling' ? 'Waiting for result…'
+                      : call.quoteSecondsLeft === 0 ? 'Quote expired'
+                      : `Approve & Pay ${nanoToTon(call.quote!.price)} TON`}
                   </button>
-                  <button type="button" className="btn btn-outline btn-sm"
-                    onClick={() => { setStatus('idle'); setQuote(null) }}>
+                  <button type="button" className="btn btn-outline btn-sm" onClick={() => call.resetQuote()}>
                     Get new quote
                   </button>
                 </div>
+              ) : agent.hasQuote ? (
+                <button type="submit" className="btn btn-primary" disabled={call.busy}>
+                  {call.status === 'quoting' ? 'Getting quote…' : 'Get Quote'}
+                </button>
               ) : (
-                <button type="submit" className="btn btn-primary" disabled={busy}>
-                  {status === 'quoting' ? 'Getting quote…' : 'Get Quote'}
+                <button type="submit" className="btn btn-primary" disabled={call.busy}>
+                  {call.status === 'paying' ? 'Waiting for payment…'
+                    : call.status === 'invoking' ? 'Calling agent…'
+                    : call.status === 'polling' ? 'Waiting for result…'
+                    : `Pay ${nanoToTon(agent.price)} TON & Execute`}
                 </button>
               )}
-            </form>
-          ) : (
-            <form onSubmit={handleSubmit} className="call-form">
-              {errorMsg && <div className="alert alert-error">{errorMsg}</div>}
-
-              {hasSchema ? (
-                Object.entries(inputSchema).map(([name, arg]) => (
-                  <div key={name} className="field">
-                    <label>
-                      {name}{arg.required && <span className="required">*</span>}
-                      {arg.description && <span className="field-desc">{arg.description}</span>}
-                    </label>
-                    {arg.type === 'boolean' ? (
-                      <select value={fields[name] ?? 'false'} disabled={busy}
-                        onChange={e => setFields(f => ({ ...f, [name]: e.target.value }))}>
-                        <option value="true">true</option>
-                        <option value="false">false</option>
-                      </select>
-                    ) : (
-                      <input type={arg.type === 'number' ? 'number' : 'text'}
-                        value={fields[name] ?? ''} required={arg.required} disabled={busy}
-                        onChange={e => setFields(f => ({ ...f, [name]: e.target.value }))} />
-                    )}
-                  </div>
-                ))
-              ) : (
-                <p className="state-msg state-msg--sm">No schema available</p>
-              )}
-
-              <button type="submit" className="btn btn-primary" disabled={busy}>
-                {status === 'paying'  ? 'Waiting for payment…'
-                  : status === 'invoking' ? 'Calling agent…'
-                  : status === 'polling' ? 'Waiting for result…'
-                  : `Pay ${nanoToTon(agent.price)} TON & Execute`}
-              </button>
             </form>
           )}
         </div>
