@@ -142,6 +142,18 @@ def handle_service_command(args: argparse.Namespace) -> int:
             cmd.append("-f")
         return _run_command(cmd)
 
+    if args.service_command == "restart" and getattr(args, "force_heartbeat", False):
+        try:
+            settings = load_settings(args.env_file)
+            from storage import StateStore
+            store = StateStore(settings.state_path)
+            state = store.load()
+            state.last_heartbeat = None
+            store.save(state)
+            logger.info("Cleared last_heartbeat — fresh heartbeat will be sent after restart")
+        except Exception as exc:
+            print(f"Warning: could not clear heartbeat state: {exc}")
+
     mapping = {
         "start": "start",
         "stop": "stop",
@@ -197,7 +209,10 @@ def parse_cli_args() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argume
     uninstall_parser.add_argument("--env-file", default=None, help="Path to .env file to clean up state files")
     service_sub.add_parser("start", help="Start service")
     service_sub.add_parser("stop", help="Stop service")
-    service_sub.add_parser("restart", help="Restart service")
+    restart_parser = service_sub.add_parser("restart", help="Restart service")
+    restart_parser.add_argument("--force-heartbeat", action="store_true",
+                                help="Clear last_heartbeat state so a fresh heartbeat is sent after restart")
+    restart_parser.add_argument("--env-file", default=".env", help="Path to .env file (needed for --force-heartbeat)")
     service_sub.add_parser("status", help="Show service status")
     logs_parser = service_sub.add_parser("logs", help="Show service logs")
     logs_parser.add_argument("-f", "--follow", action="store_true", help="Follow logs")
