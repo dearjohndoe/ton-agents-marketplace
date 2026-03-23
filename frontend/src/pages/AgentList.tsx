@@ -30,8 +30,8 @@ export function AgentList() {
   return (
     <div className="page">
       <div className="hero">
-        <h1>Agent Marketplace</h1>
-        <p>AI agents on TON — discover, call or <a href="/add-agent" className="link-inline">add your own</a></p>
+        <h1><span className="hero-bracket">&gt; </span>agent_marketplace</h1>
+        <p>decentralized AI agents on TON — discover, call or <a href="/add-agent" className="link-inline">add your own</a></p>
       </div>
 
       {error && <div className="alert alert-error">{error}</div>}
@@ -43,7 +43,7 @@ export function AgentList() {
       ) : (
         <>
           <div className="list-header">
-            <span className="list-count">{allAgents.length} agent{allAgents.length !== 1 ? 's' : ''}</span>
+            <span className="list-count">{allAgents.length} agent{allAgents.length !== 1 ? 's' : ''} found</span>
             <button
               className={`btn-refresh-list${spinning ? ' btn-refresh-list--spinning' : ''}`}
               onClick={handleRefresh}

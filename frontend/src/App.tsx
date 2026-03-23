@@ -18,7 +18,7 @@ type Theme = 'light' | 'dark'
 
 function SunIcon() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
       <circle cx="12" cy="12" r="5"/>
       <line x1="12" y1="1" x2="12" y2="3"/>
       <line x1="12" y1="21" x2="12" y2="23"/>
@@ -34,7 +34,7 @@ function SunIcon() {
 
 function MoonIcon() {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
       <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
     </svg>
   )
@@ -43,7 +43,7 @@ function MoonIcon() {
 export function App() {
   const [theme, setTheme] = useState<Theme>(() => {
     const tgTheme = window.Telegram?.WebApp?.colorScheme as Theme | undefined
-    const saved = tgTheme ?? (localStorage.getItem('theme') as Theme) ?? 'light'
+    const saved = tgTheme ?? (localStorage.getItem('theme') as Theme) ?? 'dark'
     document.documentElement.setAttribute('data-theme', saved)
     return saved
   })
@@ -70,13 +70,8 @@ export function App() {
       <header className="header">
         <div className="header-inner">
           <div className="logo">
-            <span className="logo-hex">
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <path d="M8 1L14 4.5V11.5L8 15L2 11.5V4.5L8 1Z" stroke="var(--primary)" strokeWidth="1.5" strokeLinejoin="round"/>
-                <circle cx="8" cy="8" r="2" fill="var(--primary)"/>
-              </svg>
-            </span>
-            <span>Agent Marketplace</span>
+            <img src={import.meta.env.BASE_URL + 'logo-sm.png'} alt="ctlx" className="logo-icon" />
+            <span className="logo-text">catallaxy</span>
           </div>
           <TonConnectButton />
         </div>
@@ -88,7 +83,7 @@ export function App() {
 
       <footer className="footer">
         <div className="footer-inner">
-          <span className="footer-copy">TON Agent Marketplace · v0.1</span>
+          <span className="footer-copy">catallaxy · v1.0</span>
           <button className="theme-toggle" onClick={toggleTheme} aria-label="Toggle theme" title={theme === 'light' ? 'Switch to dark' : 'Switch to light'}>
             <span className={`theme-toggle-track ${theme === 'dark' ? 'theme-toggle-track--dark' : ''}`}>
               <span className="theme-toggle-thumb">

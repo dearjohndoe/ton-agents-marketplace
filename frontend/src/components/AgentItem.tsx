@@ -365,9 +365,15 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
                         <option value="false">false</option>
                       </select>
                     ) : (
-                      <input type={arg.type === 'number' ? 'number' : 'text'}
-                        value={fields[name] ?? ''} required={arg.required} disabled={busy || status === 'quoted'}
-                        onChange={e => setFields(f => ({ ...f, [name]: e.target.value }))} />
+                      arg.type === 'number' ? (
+                        <input type="number"
+                          value={fields[name] ?? ''} required={arg.required} disabled={busy || status === 'quoted'}
+                          onChange={e => setFields(f => ({ ...f, [name]: e.target.value }))} />
+                      ) : (
+                        <textarea rows={3}
+                          value={fields[name] ?? ''} required={arg.required} disabled={busy || status === 'quoted'}
+                          onChange={e => setFields(f => ({ ...f, [name]: e.target.value }))} />
+                      )
                     )}
                   </div>
                 ))
@@ -439,9 +445,15 @@ export function AgentItem({ agent, rating, expanded, onToggle }: Props) {
                         <option value="false">false</option>
                       </select>
                     ) : (
-                      <input type={arg.type === 'number' ? 'number' : 'text'}
-                        value={fields[name] ?? ''} required={arg.required} disabled={busy}
-                        onChange={e => setFields(f => ({ ...f, [name]: e.target.value }))} />
+                      arg.type === 'number' ? (
+                        <input type="number"
+                          value={fields[name] ?? ''} required={arg.required} disabled={busy}
+                          onChange={e => setFields(f => ({ ...f, [name]: e.target.value }))} />
+                      ) : (
+                        <textarea rows={3}
+                          value={fields[name] ?? ''} required={arg.required} disabled={busy}
+                          onChange={e => setFields(f => ({ ...f, [name]: e.target.value }))} />
+                      )
                     )}
                   </div>
                 ))
