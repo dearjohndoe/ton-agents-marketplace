@@ -40,6 +40,7 @@ function parseHeartbeatTx(tx: any): Agent | null {
       argsSchema: payload.args_schema ?? {},
       lastHeartbeat: tx.now,
       hasQuote: payload.has_quote === true,
+      resultSchema: payload.result_schema ?? undefined,
     }
   } catch {
     return null

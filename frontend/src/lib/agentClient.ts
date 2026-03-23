@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { SSL_GATEWAY } from '../config'
+import type { TypedResult } from '../types'
 
 /**
  * Decides whether to call the agent directly or via ssl-gateway.
@@ -49,7 +50,7 @@ function resolveUrl(endpoint: string, path: string): { url: string; headers?: Re
 export interface InvokeResult {
   jobId: string
   status: 'done' | 'pending' | 'error'
-  result?: any
+  result?: TypedResult
   error?: string
 }
 
@@ -141,4 +142,12 @@ export async function fetchQuote(
     plan: data.plan,
     expiresAt: data.expires_at,
   }
+}
+
+export function resolveDownloadUrl(endpoint: string, path: string): string {
+  const mode = getConnectionMode(endpoint)
+  if (mode !== 'proxy') {
+    return `${endpoint}${path}`
+  }
+  return `${SSL_GATEWAY}${path}?endpoint=${encodeURIComponent(endpoint)}`
 }

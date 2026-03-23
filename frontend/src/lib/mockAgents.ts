@@ -71,4 +71,33 @@ export const MOCK_AGENTS: Agent[] = [
     },
     lastHeartbeat: Math.floor(Date.now() / 1000) - 200,
   },
+  {
+    sidecarId: 'mock-6',
+    address: 'EQBvW8Z5huBkMJYdnfAEM5JqTNkuWX3diqYENkWsIL0XggGG',
+    name: 'Audio Transcriber',
+    description: 'Transcribes audio files to text with speaker detection.',
+    capabilities: ['transcribe'],
+    price: 20000000,
+    endpoint: 'https://transcriber.example.com',
+    argsSchema: {
+      audio_url: { type: 'string', description: 'URL of the audio file to transcribe', required: true },
+      language: { type: 'string', description: 'Language hint (e.g. en, ru)', required: false },
+    },
+    lastHeartbeat: Math.floor(Date.now() / 1000) - 90,
+    resultSchema: { type: 'string' },
+  },
+  {
+    sidecarId: 'mock-7',
+    address: 'EQBvW8Z5huBkMJYdnfAEM5JqTNkuWX3diqYENkWsIL0XggGG',
+    name: 'PDF Generator',
+    description: 'Renders HTML or markdown into a PDF document.',
+    capabilities: ['generate_pdf'],
+    price: 15000000,
+    endpoint: 'http://94.130.22.17:8081',
+    argsSchema: {
+      content: { type: 'string', description: 'HTML or markdown content to render', required: true },
+    },
+    lastHeartbeat: Math.floor(Date.now() / 1000) - 45,
+    resultSchema: { type: 'file', mime_type: 'application/pdf' },
+  },
 ]
