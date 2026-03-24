@@ -165,6 +165,16 @@ export async function fetchQuote(
   }
 }
 
+export async function pingAgent(endpoint: string): Promise<boolean> {
+  try {
+    const { url, headers } = resolveUrl(endpoint, '/info')
+    await axios.get(url, { timeout: 5000, headers })
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function resolveDownloadUrl(endpoint: string, path: string): string {
   const mode = getConnectionMode(endpoint)
   if (mode !== 'proxy') {

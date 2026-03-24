@@ -26,6 +26,7 @@
   --gold-bg:       rgba(251, 191, 36, 0.08);
   --error:         #f87171;
   --error-bg:      rgba(248, 113, 113, 0.08);
+  --error-bg-2:    rgba(248, 113, 113, 0.55);
   --success:       #4ade80;
 
   --header-bg:     rgba(9, 9, 11, 0.92);
@@ -68,6 +69,7 @@
   --gold-bg:       rgba(217, 119, 6, 0.06);
   --error:         #dc2626;
   --error-bg:      rgba(220, 38, 38, 0.06);
+  --error-bg-2:    rgba(248, 113, 113, 0.55);
   --success:       #16a34a;
 
   --header-bg:     rgba(250, 250, 250, 0.90);
@@ -241,6 +243,20 @@ body {
   animation: pulse-live 2s ease-in-out infinite;
   flex-shrink: 0;
 }
+.agent-offline-badge {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 500;
+  color: #424242f8;
+  background: var(--error-bg-2);
+  border: 1px solid #424242f8;
+  border-radius: var(--radius-xs);
+  padding: 2px 6px;
+  white-space: nowrap;
+  letter-spacing: 0.2px;
+  flex-shrink: 0;
+}
+[data-theme="dark"] .agent-offline-badge { color: #e4e4e7; border-color: #e4e4e7; }
 @keyframes pulse-live {
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.3; }
@@ -602,6 +618,13 @@ body {
   color: var(--primary);
   border: 1px solid var(--border-bright);
 }
+.alert-warn {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  background: rgba(234, 179, 8, 0.08);
+  color: #a16207;
+  border: 1px solid rgba(234, 179, 8, 0.2);
+}
+[data-theme="dark"] .alert-warn { color: #fbbf24; border-color: rgba(234, 179, 8, 0.15); }
 
 /* ── Misc ── */
 .state-msg {

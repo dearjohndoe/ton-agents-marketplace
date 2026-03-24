@@ -9,6 +9,7 @@ import { TESTNET } from '../config'
 import { useAgentRating } from '../hooks/useAgentRating'
 import { useAgentCall } from '../hooks/useAgentCall'
 import { useAgentReview } from '../hooks/useAgentReview'
+import { useAgentOnline } from '../hooks/useAgentOnline'
 import { RatingBlock } from './RatingBlock'
 
 interface Props {
@@ -127,8 +128,7 @@ export function AgentItem({ agent, expanded, onToggle }: Props) {
   const call = useAgentCall(agent, expanded, tonConnectUI)
   const { rating: onChainRating, loading: ratingLoading, error: ratingError, refresh: ratingRefresh } = useAgentRating(agent.address, agent.sidecarId, expanded)
   const review = useAgentReview(agent, call.lastNonce, tonConnectUI, ratingRefresh)
-
-  const isLive = (Date.now() / 1000 - agent.lastHeartbeat) < 300
+  const { online, pinging, recheck } = useAgentOnline(agent.endpoint, expanded)
 
   function handleReset() {
     call.reset()
@@ -145,12 +145,14 @@ export function AgentItem({ agent, expanded, onToggle }: Props) {
         <div className="agent-row-left">
           <span className="agent-row-name">{agent.name || agent.address.slice(0, 10) + '…'}</span>
           <div className="agent-row-meta">
-            {isLive && <span className="agent-live-dot" title="Online" />}
+            {online === true && !pinging && <span className="tag" style={{color: 'var(--success)', borderColor: 'var(--success)'}}>online</span>}
+            {online === false && !pinging && <span className="agent-offline-badge">offline</span>}
+            {pinging && <span className="tag">…</span>}
             {agent.capabilities.map(c => <span key={c} className="tag">{c}</span>)}
           </div>
         </div>
         <div className="agent-row-right">
-          <span className="agent-row-price">{nanoToTon(agent.price)} TON</span>
+          <span className="agent-row-price">{agent.hasQuote ? `from ${nanoToTon(agent.price)} TON` : `${nanoToTon(agent.price)} TON`}</span>
           <span className={`chevron ${expanded ? 'chevron--open' : ''}`}>
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
               <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
@@ -271,9 +273,18 @@ export function AgentItem({ agent, expanded, onToggle }: Props) {
                 </div>
               )}
 
+              {online === false && (
+                <div className="alert alert-warn">
+                  <span>Agent appears to be offline. Sending payment may result in a loss of funds.</span>
+                  <button type="button" className="btn btn-outline btn-sm" onClick={recheck} disabled={pinging}>
+                    {pinging ? 'Checking…' : 'Check again'}
+                  </button>
+                </div>
+              )}
+
               {inQuoteFlow ? (
                 <div className="quote-actions">
-                  <button type="submit" className="btn btn-primary" disabled={call.busy || call.quoteSecondsLeft === 0}>
+                  <button type="submit" className="btn btn-primary" disabled={call.busy || call.quoteSecondsLeft === 0 || online === false}>
                     {call.status === 'paying' ? 'Waiting for payment…'
                       : call.status === 'invoking' ? 'Calling agent…'
                       : call.status === 'polling' ? 'Waiting for result…'
@@ -285,11 +296,11 @@ export function AgentItem({ agent, expanded, onToggle }: Props) {
                   </button>
                 </div>
               ) : agent.hasQuote ? (
-                <button type="submit" className="btn btn-primary" disabled={call.busy}>
+                <button type="submit" className="btn btn-primary" disabled={call.busy || online === false}>
                   {call.status === 'quoting' ? 'Getting quote…' : 'Get Quote'}
                 </button>
               ) : (
-                <button type="submit" className="btn btn-primary" disabled={call.busy}>
+                <button type="submit" className="btn btn-primary" disabled={call.busy || online === false}>
                   {call.status === 'paying' ? 'Waiting for payment…'
                     : call.status === 'invoking' ? 'Calling agent…'
                     : call.status === 'polling' ? 'Waiting for result…'
