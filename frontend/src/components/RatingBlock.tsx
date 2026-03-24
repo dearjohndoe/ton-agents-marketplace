@@ -48,6 +48,7 @@ export function RatingBlock({ rating, loading, error, onRefresh }: Props) {
         <div className="rating-head">
           <span className="rating-star rating-star--new">★ NEW</span>
           <span className="rating-meta">no activity yet</span>
+          <button className="rating-refresh" onClick={(e) => { e.stopPropagation(); onRefresh(); }} title="Refresh rating">↻</button> 
         </div>
       </div>
     )
@@ -61,6 +62,7 @@ export function RatingBlock({ rating, loading, error, onRefresh }: Props) {
           <span className="rating-meta">
             {rating.totalTxs} txs · too few to rate
           </span>
+          <button className="rating-refresh" onClick={(e) => { e.stopPropagation(); onRefresh(); }} title="Refresh rating">↻</button>
         </div>
       </div>
     )
