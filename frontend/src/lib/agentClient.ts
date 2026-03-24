@@ -60,18 +60,34 @@ export interface PaymentRequest {
   nonce: string
 }
 
+function buildMultipart(
+  fields: Record<string, string>,
+  body: Record<string, string | number | boolean>,
+  fileFields?: Record<string, File>,
+): FormData {
+  const form = new FormData()
+  for (const [k, v] of Object.entries(fields)) {
+    if (v !== undefined && v !== null && v !== '') form.append(k, v)
+  }
+  form.append('body_json', JSON.stringify(body))
+  if (fileFields) {
+    for (const [name, file] of Object.entries(fileFields)) {
+      form.append(`file:${name}`, file, file.name)
+    }
+  }
+  return form
+}
+
 export async function invokePreflight(
   endpoint: string,
   capability: string,
   body: Record<string, string | number | boolean>,
   quoteId?: string
 ): Promise<PaymentRequest> {
-  const payload: Record<string, unknown> = { capability, body }
-  if (quoteId) payload.quote_id = quoteId
-
+  const form = buildMultipart({ capability, ...(quoteId ? { quote_id: quoteId } : {}) }, body)
   const { url, headers } = resolveUrl(endpoint, '/invoke')
   try {
-    await axios.post(url, payload, { timeout: 90000, headers })
+    await axios.post(url, form, { timeout: 90000, headers })
     throw new Error('Expected 402 Payment Required, but got success')
   } catch (err: any) {
     if (err.response?.status === 402 && err.response.data?.payment_request) {
@@ -92,12 +108,16 @@ export async function invokeAgent(
   nonce: string,
   capability: string,
   body: Record<string, string | number | boolean>,
-  quoteId?: string
+  quoteId?: string,
+  fileFields?: Record<string, File>,
 ): Promise<InvokeResult> {
-  const payload: Record<string, unknown> = { tx, nonce, capability, body }
-  if (quoteId) payload.quote_id = quoteId
+  const form = buildMultipart(
+    { tx, nonce, capability, ...(quoteId ? { quote_id: quoteId } : {}) },
+    body,
+    fileFields,
+  )
   const { url, headers } = resolveUrl(endpoint, '/invoke')
-  const { data } = await axios.post(url, payload, { timeout: 90000, headers })
+  const { data } = await axios.post(url, form, { timeout: 90000, headers })
   return { jobId: data.job_id, status: data.status, result: data.result, error: data.error }
 }
 
@@ -134,8 +154,9 @@ export async function fetchQuote(
   capability: string,
   body: Record<string, string | number | boolean>
 ): Promise<QuoteResult> {
+  const form = buildMultipart({ capability }, body)
   const { url, headers } = resolveUrl(endpoint, '/quote')
-  const { data } = await axios.post(url, { capability, body }, { timeout: 60000, headers })
+  const { data } = await axios.post(url, form, { timeout: 60000, headers })
   return {
     quoteId: data.quote_id,
     price: data.price,

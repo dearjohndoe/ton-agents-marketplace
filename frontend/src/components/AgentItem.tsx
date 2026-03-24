@@ -71,10 +71,11 @@ function CopyButton({ text }: { text: string }) {
   )
 }
 
-function InputFields({ schema, fields, setFields, disabled }: {
+function InputFields({ schema, fields, setFields, setFileFields, disabled }: {
   schema: Record<string, ArgSchema>
   fields: Record<string, string>
   setFields: React.Dispatch<React.SetStateAction<Record<string, string>>>
+  setFileFields: React.Dispatch<React.SetStateAction<Record<string, File>>>
   disabled: boolean
 }) {
   if (Object.keys(schema).length === 0) {
@@ -84,10 +85,22 @@ function InputFields({ schema, fields, setFields, disabled }: {
     {Object.entries(schema).map(([name, arg]) => (
       <div key={name} className="field">
         <label>
-          {name}{arg.required && <span className="required">*</span>}
+          <span>{name}{arg.required && <span className="required">*</span>}</span>
           {arg.description && <span className="field-desc">{arg.description}</span>}
         </label>
-        {arg.type === 'boolean' ? (
+        {arg.type === 'file' ? (
+          <input type="file" disabled={disabled}
+            onChange={e => {
+              const f = e.target.files?.[0]
+              if (f) {
+                setFileFields(prev => ({ ...prev, [name]: f }))
+                if ('file_name' in schema) {
+                  setFields(prev => ({ ...prev, file_name: f.name }))
+                }
+              }
+            }}
+          />
+        ) : arg.type === 'boolean' ? (
           <select value={fields[name] ?? 'false'} disabled={disabled}
             onChange={e => setFields(f => ({ ...f, [name]: e.target.value }))}>
             <option value="true">true</option>
@@ -228,6 +241,7 @@ export function AgentItem({ agent, expanded, onToggle }: Props) {
                 schema={agent.argsSchema}
                 fields={call.fields}
                 setFields={call.setFields}
+                setFileFields={call.setFileFields}
                 disabled={fieldsDisabled}
               />
 

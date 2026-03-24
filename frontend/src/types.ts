@@ -1,5 +1,5 @@
 export interface ArgSchema {
-  type: 'string' | 'number' | 'boolean'
+  type: 'string' | 'number' | 'boolean' | 'file'
   description: string
   required: boolean
 }

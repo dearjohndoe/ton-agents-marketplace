@@ -157,7 +157,7 @@ function BagIdResult({ data }: { data: string }) {
     <div className="result-bagid">
       <span className="result-bagid-label">Bag ID</span>
       <a
-        href={`https://tonscan.org/bags/${data}`}
+        href={`https://mytonstorage.org/api/v1/gateway/${data}`}
         target="_blank"
         rel="noopener noreferrer"
         className="link"
