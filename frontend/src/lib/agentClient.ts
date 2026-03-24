@@ -14,15 +14,22 @@ export type ConnectionMode = 'direct' | 'proxy' | 'insecure'
 
 // Gateway availability flag — updated by checkGatewayHealth()
 let _gatewayAvailable = false
+let _healthPromise: Promise<void> | null = null
 
 export async function checkGatewayHealth(): Promise<void> {
   if (!SSL_GATEWAY) return
-  try {
-    await axios.get(`${SSL_GATEWAY}/health`, { timeout: 5000 })
-    _gatewayAvailable = true
-  } catch {
-    _gatewayAvailable = false
-  }
+  if (_healthPromise) return _healthPromise
+  _healthPromise = (async () => {
+    try {
+      await axios.get(`${SSL_GATEWAY}/health`, { timeout: 5000 })
+      _gatewayAvailable = true
+    } catch {
+      _gatewayAvailable = false
+    } finally {
+      _healthPromise = null
+    }
+  })()
+  return _healthPromise
 }
 
 export function getConnectionMode(endpoint: string): ConnectionMode {
@@ -167,6 +174,7 @@ export async function fetchQuote(
 
 export async function pingAgent(endpoint: string): Promise<boolean> {
   try {
+    await checkGatewayHealth()
     const { url, headers } = resolveUrl(endpoint, '/info')
     await axios.get(url, { timeout: 5000, headers })
     return true
