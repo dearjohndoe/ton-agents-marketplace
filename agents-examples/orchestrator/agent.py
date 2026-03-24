@@ -206,7 +206,7 @@ async def handle_execute(task: str, quote_id: str) -> dict:
     from agents_cache import AgentInfo
     from executor import execute_chain
     from planner import ChainStep
-    from transfer import TransferSender, payment_body
+    from transfer import TransferSender, payment_body, refund_body
 
     cfg = _get_config()
 
@@ -251,6 +251,24 @@ async def handle_execute(task: str, quote_id: str) -> dict:
             total_budget=quote["total_price"],
             orchestrator_fee=ORCHESTRATOR_FEE,
         )
+
+        # Refund unused budget to the user
+        if result.refund_to_user > 0:
+            caller_address = os.environ.get("CALLER_ADDRESS", "")
+            caller_tx_hash = os.environ.get("CALLER_TX_HASH", "")
+            own_sidecar_id = cfg.get("own_sidecar_id", "")
+            if caller_address:
+                try:
+                    refund_cell = refund_body(caller_tx_hash, "partial_chain_failure", own_sidecar_id)
+                    await sender.send(caller_address, result.refund_to_user, refund_cell)
+                    logger.info(
+                        "Refund sent: %d nanotons to %s",
+                        result.refund_to_user, caller_address,
+                    )
+                except Exception:
+                    logger.exception("Failed to send refund of %d to %s", result.refund_to_user, caller_address)
+            else:
+                logger.error("Cannot refund %d nanotons: CALLER_ADDRESS not set", result.refund_to_user)
     finally:
         await sender.close()
 
