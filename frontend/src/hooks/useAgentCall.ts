@@ -15,6 +15,7 @@ export function useAgentCall(
   tonConnectUI: { sendTransaction: (params: any) => Promise<{ boc: string }> },
 ) {
   const [fields, setFields] = useState<Record<string, string>>({})
+  const [fileFields, setFileFields] = useState<Record<string, File>>({})
   const [status, setStatus] = useState<CallStatus>('idle')
   const [result, setResult] = useState<any>(null)
   const [errorMsg, setErrorMsg] = useState('')
@@ -54,7 +55,7 @@ export function useAgentCall(
     const body: Record<string, string | number | boolean> = {}
     for (const [k, v] of Object.entries(fields)) {
       const s = agent.argsSchema[k]
-      if (!s) continue
+      if (!s || s.type === 'file') continue
       body[k] = s.type === 'number' ? Number(v) : s.type === 'boolean' ? v === 'true' : v
     }
     return body
@@ -114,7 +115,7 @@ export function useAgentCall(
 
     setStatus('invoking')
     try {
-      const res = await invokeAgent(agent.endpoint, txBoc, paymentRequest.nonce, agent.capabilities[0] ?? '', body, quote?.quoteId)
+      const res = await invokeAgent(agent.endpoint, txBoc, paymentRequest.nonce, agent.capabilities[0] ?? '', body, quote?.quoteId, fileFields)
 
       if (res.status === 'done') {
         setResult(res.result); setStatus('done')
@@ -156,6 +157,7 @@ export function useAgentCall(
 
   return {
     fields, setFields,
+    fileFields, setFileFields,
     status, result, errorMsg,
     quote, quoteSecondsLeft,
     lastNonce, connMode,

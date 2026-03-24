@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
+import os
+import shutil
 import time
 import uuid
 from dataclasses import dataclass
@@ -53,14 +56,28 @@ async def fetch_describe(command: str, timeout: int, sidecar_id: str) -> tuple[d
         raise RuntimeError(f"Agent must return valid args_schema on startup. Error: {exc}")
 
 
-def validate_body(payload: dict[str, Any], args_schema: dict[str, Any]) -> list[str]:
+def validate_body(
+    payload: dict[str, Any],
+    args_schema: dict[str, Any],
+    has_tx: bool = False,
+    uploaded_files: dict[str, Path] | None = None,
+) -> list[str]:
     body = payload.get("body")
     if not isinstance(body, dict):
-        return ["body"]
+        body = {}
 
     missing: list[str] = []
     for field, spec in args_schema.items():
-        if spec.get("required") and field not in body:
+        if not spec.get("required"):
+            continue
+        if spec.get("type") == "file":
+            # Skip file validation on preflight (no tx) — file not sent yet
+            if not has_tx:
+                continue
+            if uploaded_files and field in uploaded_files:
+                continue
+            missing.append(field)
+        elif field not in body:
             missing.append(field)
     return missing
 
@@ -288,7 +305,14 @@ class SidecarApp:
         if "type" not in result or "data" not in result:
             raise ValueError("Agent result must contain 'type' and 'data' keys")
 
-    def _create_runner(self, agent_payload: dict[str, Any], sender: str, amount: int, tx_hash: str):
+    def _create_runner(
+        self,
+        agent_payload: dict[str, Any],
+        sender: str,
+        amount: int,
+        tx_hash: str,
+        uploaded_files: dict[str, Path] | None = None,
+    ):
         async def runner() -> dict[str, Any]:
             try:
                 raw = await run_agent_subprocess(
@@ -308,7 +332,7 @@ class SidecarApp:
                     short_reason = "execution_failed"
                 else:
                     short_reason = "internal_error"
-                
+
                 try:
                     await self.refund_user(
                         recipient=sender,
@@ -319,7 +343,51 @@ class SidecarApp:
                 except Exception:
                     logger.exception("Refund sub-task failed inside runner")
                 raise
+            finally:
+                if uploaded_files:
+                    for file_path in uploaded_files.values():
+                        try:
+                            shutil.rmtree(file_path.parent, ignore_errors=True)
+                        except Exception:
+                            logger.warning("Failed to cleanup uploaded file dir %s", file_path.parent)
         return runner
+
+    async def _parse_multipart_invoke(
+        self, request: web.Request
+    ) -> tuple[str, str, str, str | None, dict[str, Any], dict[str, Path]]:
+        """Parse multipart/form-data invoke request.
+
+        Returns: (tx_hash, nonce, capability, quote_id, body_dict, uploaded_files)
+        """
+        reader = await request.multipart()
+        tx_hash = nonce = capability = ""
+        quote_id: str | None = None
+        body: dict[str, Any] = {}
+        uploaded_files: dict[str, Path] = {}
+
+        async for part in reader:
+            name = part.name
+            if name == "tx":
+                tx_hash = (await part.text()).strip()
+            elif name == "nonce":
+                nonce = (await part.text()).strip()
+            elif name == "capability":
+                capability = (await part.text()).strip()
+            elif name == "quote_id":
+                quote_id = (await part.text()).strip() or None
+            elif name == "body_json":
+                body = json.loads(await part.text())
+            elif name and name.startswith("file:"):
+                field_name = name[5:]  # strip "file:" prefix
+                file_data = await part.read(decode=False)
+                original_name = part.filename or f"{uuid.uuid4().hex}.bin"
+                upload_dir = self._file_store_dir / "uploads" / uuid.uuid4().hex
+                upload_dir.mkdir(parents=True, exist_ok=True)
+                file_path = upload_dir / original_name
+                file_path.write_bytes(file_data)
+                uploaded_files[field_name] = file_path
+
+        return tx_hash, nonce, capability, quote_id, body, uploaded_files
 
     def _cleanup_expired_quotes(self) -> None:
         now = time.time()
@@ -332,25 +400,29 @@ class SidecarApp:
             return web.json_response({"error": "This agent does not support quotes"}, status=404)
 
         try:
-            payload = await request.json()
+            if request.content_type and "multipart/form-data" in request.content_type:
+                _, _, capability, _, body, _ = await self._parse_multipart_invoke(request)
+            else:
+                data = await request.json()
+                capability = str(data.get("capability", "")).strip()
+                body = data.get("body", {})
         except Exception:
-            return web.json_response({"error": "Invalid JSON"}, status=400)
+            return web.json_response({"error": "Invalid request"}, status=400)
 
-        capability = str(payload.get("capability", "")).strip()
         if not capability:
             return web.json_response({"error": "capability is required"}, status=400)
 
         if capability != self.settings.capability:
             return web.json_response({"error": "Unsupported capability"}, status=400)
 
-        missing = validate_body(payload, self.args_schema)
+        missing = validate_body({"body": body}, self.args_schema)
         if missing:
             return web.json_response({"error": "Missing required fields", "missing": missing}, status=400)
 
         quote_payload = {
             "mode": "quote",
             "capability": capability,
-            "body": payload.get("body", {}),
+            "body": body,
         }
 
         try:
@@ -387,15 +459,23 @@ class SidecarApp:
     async def handle_invoke(self, request: web.Request) -> web.Response:
         from aiohttp import web
 
-        try:
-            payload = await request.json()
-        except Exception:
-            return web.json_response({"error": "Invalid JSON"}, status=400)
+        uploaded_files: dict[str, Path] = {}
 
-        tx_hash = str(payload.get("tx", "")).strip()
-        nonce = str(payload.get("nonce", "")).strip()
-        capability = str(payload.get("capability", "")).strip()
-        quote_id = str(payload.get("quote_id", "")).strip() or None
+        try:
+            if request.content_type and "multipart/form-data" in request.content_type:
+                tx_hash, nonce, capability, quote_id, body, uploaded_files = \
+                    await self._parse_multipart_invoke(request)
+                payload = {"body": body}
+            else:
+                data = await request.json()
+                tx_hash = str(data.get("tx", "")).strip()
+                nonce = str(data.get("nonce", "")).strip()
+                capability = str(data.get("capability", "")).strip()
+                quote_id = str(data.get("quote_id", "")).strip() or None
+                body = data.get("body", {})
+                payload = data
+        except Exception:
+            return web.json_response({"error": "Invalid request"}, status=400)
 
         if not capability:
             return web.json_response({"error": "capability is required"}, status=400)
@@ -403,7 +483,7 @@ class SidecarApp:
         if capability != self.settings.capability:
             return web.json_response({"error": "Unsupported capability"}, status=400)
 
-        missing = validate_body(payload, self.args_schema)
+        missing = validate_body(payload, self.args_schema, has_tx=bool(tx_hash), uploaded_files=uploaded_files)
         if missing:
             return web.json_response({"error": "Missing required fields", "missing": missing}, status=400)
 
@@ -476,13 +556,19 @@ class SidecarApp:
         if quote_id and quote_id in self.quotes:
             del self.quotes[quote_id]
 
+        agent_body = dict(body)
+        for field_name, file_path in uploaded_files.items():
+            agent_body[f"{field_name}_path"] = str(file_path)
+            if f"{field_name}_name" not in agent_body:
+                agent_body[f"{field_name}_name"] = file_path.name
+
         agent_payload = {
             "capability": capability,
-            "body": payload["body"],
+            "body": agent_body,
         }
 
         job_id = await self.jobs.submit(
-            self._create_runner(agent_payload, verified_payment.sender, verified_payment.amount, tx_hash)
+            self._create_runner(agent_payload, verified_payment.sender, verified_payment.amount, tx_hash, uploaded_files)
         )
 
         record = await self.jobs.wait_for_completion(job_id, timeout_seconds=self.settings.sync_timeout)
@@ -565,7 +651,8 @@ class SidecarApp:
             cors_headers = {
                 "Access-Control-Allow-Origin": "*",
                 "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-                "Access-Control-Allow-Headers": "Content-Type, Authorization",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Max-Age": "86400",
             }
             if request.method == "OPTIONS":
                 return web.Response(status=204, headers=cors_headers)
@@ -602,8 +689,9 @@ class SidecarApp:
                 
             return await handler(request)
 
+        max_upload_mb = int(os.environ.get("MAX_UPLOAD_SIZE_MB", "150"))
         app = web.Application(
-            client_max_size=1024 * 1024 * 2,  # Limit 2MB
+            client_max_size=1024 * 1024 * max_upload_mb,
             middlewares=[cors_middleware, rate_limit_middleware],
         )
         app.add_routes(

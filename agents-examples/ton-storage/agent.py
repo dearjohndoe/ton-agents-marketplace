@@ -1,4 +1,3 @@
-import base64
 import json
 import os
 import shutil
@@ -19,16 +18,12 @@ STORAGE_API_URL = os.environ.get("STORAGE_API_URL", "http://127.0.0.1:9955").rst
 STORAGE_API_LOGIN = os.environ.get("STORAGE_API_LOGIN", "")
 STORAGE_API_PASSWORD = os.environ.get("STORAGE_API_PASSWORD", "")
 MAX_FILE_SIZE_MB = int(os.environ.get("MAX_FILE_SIZE_MB", "100"))
+BASE_PRICE_NANOTON = int(os.environ.get("AGENT_PRICE", "10000000"))
 
 ARGS_SCHEMA = {
     "file": {
-        "type": "string",
-        "description": "Base64-encoded file content",
-        "required": True,
-    },
-    "file_name": {
-        "type": "string",
-        "description": "Original file name with extension",
+        "type": "file",
+        "description": "File to upload to TON Storage",
         "required": True,
     },
     "duration_months": {
@@ -62,17 +57,26 @@ def _storage_auth():
 def _create_bag(dir_path: str, description: str) -> str:
     import requests
 
-    resp = requests.post(
-        f"{STORAGE_API_URL}/api/v1/create",
-        json={"path": dir_path, "description": description},
-        auth=_storage_auth(),
-        timeout=120,
-    )
-    resp.raise_for_status()
+    try:
+        resp = requests.post(
+            f"{STORAGE_API_URL}/api/v1/create",
+            json={"path": dir_path, "description": description},
+            auth=_storage_auth(),
+            timeout=120,
+        )
+        resp.raise_for_status()
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else "unknown"
+        raise RuntimeError(f"Storage API error (HTTP {status})") from exc
+    except requests.ConnectionError:
+        raise RuntimeError("Storage API is unavailable")
+    except requests.Timeout:
+        raise RuntimeError("Storage API timed out")
+
     data = resp.json()
     bag_id = data.get("bag_id")
     if not bag_id:
-        raise RuntimeError(f"Storage API returned no bag_id: {data}")
+        raise RuntimeError("Storage API returned no bag_id")
     return bag_id
 
 
@@ -83,15 +87,26 @@ def main():
         print(json.dumps({"args_schema": ARGS_SCHEMA, "result_schema": {"type": "bagid"}}))
         return
 
+    if task.get("mode") == "quote":
+        body = task.get("body") or {}
+        duration_months = int(body.get("duration_months", 1))
+        if not 1 <= duration_months <= 12:
+            raise ValueError("duration_months must be between 1 and 12")
+        price = BASE_PRICE_NANOTON * duration_months
+        print(json.dumps({"price": price, "plan": f"{duration_months} month(s) of storage", "ttl": 120}))
+        return
+
     body = task.get("body") or {}
 
-    file_b64 = body.get("file", "")
-    if not file_b64:
-        raise ValueError("body.file is required (base64-encoded file content)")
+    file_path_str = body.get("file_path", "")
+    if not file_path_str:
+        raise ValueError("body.file_path is required")
 
-    file_name = body.get("file_name", "").strip()
-    if not file_name:
-        raise ValueError("body.file_name is required")
+    file_path = Path(file_path_str)
+    if not file_path.exists():
+        raise ValueError(f"File not found: {file_path}")
+
+    file_name = body.get("file_name") or file_path.name
 
     duration_months = body.get("duration_months")
     if duration_months is None:
@@ -100,8 +115,7 @@ def main():
     if not 1 <= duration_months <= 12:
         raise ValueError("duration_months must be between 1 and 12")
 
-    file_bytes = base64.b64decode(file_b64)
-    file_size_mb = len(file_bytes) / (1024 * 1024)
+    file_size_mb = file_path.stat().st_size / (1024 * 1024)
     if file_size_mb > MAX_FILE_SIZE_MB:
         raise ValueError(
             f"File size {file_size_mb:.1f} MB exceeds limit of {MAX_FILE_SIZE_MB} MB"
@@ -111,8 +125,8 @@ def main():
     upload_dir = UPLOAD_DIR / upload_id
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    file_path = upload_dir / file_name
-    file_path.write_bytes(file_bytes)
+    dest_path = upload_dir / file_name
+    shutil.copy2(str(file_path), str(dest_path))
 
     try:
         bag_id = _create_bag(str(upload_dir), f"Upload: {file_name}")
