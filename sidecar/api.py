@@ -319,7 +319,11 @@ class SidecarApp:
                     command=self.settings.agent_command,
                     payload=agent_payload,
                     timeout_seconds=self.settings.final_timeout,
-                    env={"OWN_SIDECAR_ID": self.sidecar_id},
+                    env={
+                        "OWN_SIDECAR_ID": self.sidecar_id,
+                        "CALLER_ADDRESS": sender,
+                        "CALLER_TX_HASH": tx_hash,
+                    },
                 )
                 self._validate_result_structure(raw)
                 return raw

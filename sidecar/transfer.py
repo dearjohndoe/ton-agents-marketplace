@@ -54,6 +54,10 @@ def text_comment_body(text: str) -> Cell:
     )
 
 
+SEND_MAX_RETRIES = 3
+SEND_RETRY_DELAYS = [2, 5, 10]  # seconds between retries
+
+
 class TransferSender:
     def __init__(
         self,
@@ -75,24 +79,53 @@ class TransferSender:
         self._wallet = WalletV4R2.from_private_key(self._client, pk)
         logger.info("Transfer sender initialized via liteserver (testnet=%s)", self._network == NetworkGlobalID.TESTNET)
 
+    async def _reconnect(self) -> None:
+        """Drop current liteserver connection and re-initialize."""
+        if self._client is not None:
+            try:
+                await self._client.close()
+            except Exception:
+                pass
+            self._client = None
+            self._wallet = None
+        await self._ensure_initialized()
+
     async def send(self, destination: str, amount: int, body: Cell) -> str:
         async with self._lock:
-            await self._ensure_initialized()
-            assert self._wallet is not None
-            msg = await self._wallet.transfer(
-                destination=destination,
-                amount=amount,
-                body=body,
-                bounce=False,
+            last_exc: Exception | None = None
+            for attempt in range(SEND_MAX_RETRIES):
+                try:
+                    await self._ensure_initialized()
+                    assert self._wallet is not None
+                    msg = await self._wallet.transfer(
+                        destination=destination,
+                        amount=amount,
+                        body=body,
+                        bounce=False,
+                    )
+                    tx_hash = msg.normalized_hash
+                    logger.info(
+                        "Transfer sent: hash=%s dest=%s amount=%d",
+                        tx_hash,
+                        destination,
+                        amount,
+                    )
+                    return tx_hash
+                except Exception as exc:
+                    last_exc = exc
+                    delay = SEND_RETRY_DELAYS[min(attempt, len(SEND_RETRY_DELAYS) - 1)]
+                    logger.warning(
+                        "Transfer attempt %d/%d failed (dest=%s amount=%d): %s. Retrying in %ds",
+                        attempt + 1, SEND_MAX_RETRIES, destination, amount, exc, delay,
+                    )
+                    await self._reconnect()
+                    await asyncio.sleep(delay)
+
+            logger.error(
+                "Transfer failed after %d attempts: dest=%s amount=%d",
+                SEND_MAX_RETRIES, destination, amount,
             )
-            tx_hash = msg.normalized_hash
-            logger.info(
-                "Transfer sent: hash=%s dest=%s amount=%d",
-                tx_hash,
-                destination,
-                amount,
-            )
-            return tx_hash
+            raise last_exc  # type: ignore[misc]
 
     async def close(self) -> None:
         if self._client is not None:
