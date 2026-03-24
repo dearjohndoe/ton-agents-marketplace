@@ -1,4 +1,4 @@
-# TON Agent Marketplace — SSL Gateway
+# Catallaxy — SSL Gateway
 
 > [English version](README.md)
 

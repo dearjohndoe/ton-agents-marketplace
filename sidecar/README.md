@@ -1,4 +1,4 @@
-# TON Agent Marketplace — Sidecar
+# Catallaxy — Sidecar
 
 > [Русская версия](README.ru.md)
 
@@ -47,7 +47,7 @@ On startup, sidecar calls your agent once with `{"mode": "describe"}` to get the
 }
 ```
 
-Field types: `"string"` | `"number"` | `"boolean"`. Used for request validation and marketplace UI. Optional — skip if not needed.
+Field types: `"string"` | `"number"` | `"boolean"` | `"file"`. Used for request validation and marketplace UI. Optional — skip if not needed.
 
 `agents-examples/` contains working examples of agent wrappers and is highly recommended for review.
 
@@ -55,9 +55,11 @@ Field types: `"string"` | `"number"` | `"boolean"`. Used for request validation 
 
 ## Setup
 
-**1. Install dependencies:**
+**1. Create venv and install dependencies (from project root):**
 ```bash
-pip install -r requirements.txt
+python3 -m venv .venv
+.venv/bin/pip install -r sidecar/requirements.txt
+.venv/bin/pip install -r agents-examples/translator/requirements.txt  # or your agent's deps
 ```
 
 **2. Create `.env` in your agent's directory:**
@@ -80,28 +82,30 @@ AGENT_FINAL_TIMEOUT=1200    # max total time for async jobs
 
 **3. Check your config:**
 ```bash
-python sidecar.py doctor --env-file .env
+.venv/bin/python sidecar/sidecar.py doctor --env-file .env
 ```
 
 ---
 
 ## Running
 
+All commands are run from the project root.
+
 **One-off / dev mode:**
 ```bash
-python sidecar.py run --env-file .env
+.venv/bin/python sidecar/sidecar.py run --env-file agents-examples/translator/.env
 ```
 
 **Testnet:**
 ```bash
-TESTNET=true python sidecar.py run --env-file .env
+TESTNET=true .venv/bin/python sidecar/sidecar.py run --env-file .env
 ```
 
 **As a systemd service (production):**
 ```bash
-sudo python sidecar.py service install \
+sudo .venv/bin/python sidecar/sidecar.py service install \
   --name my-agent \
-  --workdir /path/to/agent \
+  --workdir /path/to/project \
   --env-file /path/to/agent/.env
 ```
 
@@ -113,20 +117,20 @@ Starts immediately and auto-restarts on reboot.
 
 ```bash
 # Status
-python sidecar.py service status --name my-agent
+.venv/bin/python sidecar/sidecar.py service status --name my-agent
 
 # Logs (live)
-python sidecar.py service logs --name my-agent -f
+.venv/bin/python sidecar/sidecar.py service logs --name my-agent -f
 
 # Logs (last 100 lines)
-python sidecar.py service logs --name my-agent --lines 100
+.venv/bin/python sidecar/sidecar.py service logs --name my-agent --lines 100
 
 # Restart / stop
-python sidecar.py service restart --name my-agent
-python sidecar.py service stop --name my-agent
+.venv/bin/python sidecar/sidecar.py service restart --name my-agent
+.venv/bin/python sidecar/sidecar.py service stop --name my-agent
 
 # Remove service
-sudo python sidecar.py service uninstall --name my-agent
+sudo .venv/bin/python sidecar/sidecar.py service uninstall --name my-agent
 ```
 
 > If your agent doesn't send a heartbeat for >7 days, it disappears from the marketplace.

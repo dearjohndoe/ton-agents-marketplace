@@ -15,6 +15,7 @@ processed_txs.*
 agents-examples/*/results/*
 PITCH.md
 PROJECT.md
+file_storage
 tests/
 .quotes_cache.db
 TASK_*
