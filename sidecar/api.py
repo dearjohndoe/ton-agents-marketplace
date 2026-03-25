@@ -280,7 +280,7 @@ class SidecarApp:
             return final_res, None
         except Exception as exc:
             logger.exception("Failed to process agent result")
-            return None, f"Invalid agent response: {exc}"
+            return None, "Failed to process agent result"
 
     def _cleanup_file(self, file_id: str) -> None:
         entry = self._file_store.pop(file_id, None)
@@ -438,10 +438,11 @@ class SidecarApp:
             )
         except Exception as exc:
             logger.exception("Quote subprocess failed")
-            return web.json_response({"error": f"Quote generation failed: {exc}"}, status=500)
+            return web.json_response({"error": "Quote generation failed"}, status=500)
 
         price = agent_result.get("price")
         plan = agent_result.get("plan", "")
+        note = agent_result.get("note")
         ttl = int(agent_result.get("ttl", DEFAULT_QUOTE_TTL))
 
         if not isinstance(price, int) or price <= 0:
@@ -453,12 +454,16 @@ class SidecarApp:
         expires_at = time.time() + ttl
         self.quotes[quote_id] = QuoteEntry(price=price, expires_at=expires_at)
 
-        return web.json_response({
+        resp: dict[str, Any] = {
             "quote_id": quote_id,
             "price": price,
             "plan": plan,
             "expires_at": int(expires_at),
-        })
+        }
+        if note:
+            resp["note"] = note
+
+        return web.json_response(resp)
 
     async def handle_invoke(self, request: web.Request) -> web.Response:
         from aiohttp import web
@@ -487,10 +492,6 @@ class SidecarApp:
         if capability != self.settings.capability:
             return web.json_response({"error": "Unsupported capability"}, status=400)
 
-        missing = validate_body(payload, self.args_schema, has_tx=bool(tx_hash), uploaded_files=uploaded_files)
-        if missing:
-            return web.json_response({"error": "Missing required fields", "missing": missing}, status=400)
-
         # Determine minimum payment amount (quoted or static)
         min_amount = self.settings.agent_price
         if quote_id:
@@ -502,11 +503,12 @@ class SidecarApp:
                 return web.json_response({"error": "Quote is currently locked by another request"}, status=409)
             min_amount = quote_entry.price
 
-        # HTTP 402 Payment Required flow
+        # HTTP 402 Payment Required flow — return price before validating body,
+        # so preflight pings always get 402 with real price (not 400 for missing fields)
         if not tx_hash:
             if not nonce or not nonce.endswith(f":{self.sidecar_id}"):
                 nonce = f"{uuid.uuid4().hex[:16]}:{self.sidecar_id}"
-            
+
             return web.json_response({
                 "error": "Payment required",
                 "payment_request": {
@@ -519,6 +521,11 @@ class SidecarApp:
                 "x-ton-pay-amount": str(min_amount),
                 "x-ton-pay-nonce": nonce
             })
+
+        # Validate body only on execution (with tx) — preflight already returned above
+        missing = validate_body(payload, self.args_schema, has_tx=True, uploaded_files=uploaded_files)
+        if missing:
+            return web.json_response({"error": "Missing required fields", "missing": missing}, status=400)
 
         if not nonce:
             return web.json_response({"error": "nonce is required with tx"}, status=400)
