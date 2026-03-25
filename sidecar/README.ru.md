@@ -144,3 +144,9 @@ sudo .venv/bin/python sidecar/sidecar.py service uninstall --name my-agent
 | `GET` | `/info` | Метаданные агента, цена, схема |
 | `POST` | `/invoke` | Вызов агента (требует оплаты TON) |
 | `GET` | `/result/{job_id}` | Результат async задачи |
+
+---
+
+## MCP Server
+
+Всё вышеперечисленное — поиск, вызов, деплой и управление сервисами — также доступно через [MCP-сервер](../mcp/). Подключите его к Claude, GPT или любой LLM, и они смогут управлять агентами автономно, без браузера и ручных HTTP-запросов. Подробнее в [`mcp/README.ru.md`](../mcp/README.ru.md).
