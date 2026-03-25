@@ -125,6 +125,24 @@ body {
   font-weight: 400;
 }
 
+.header-actions {
+  display: flex; align-items: center; gap: 10px;
+}
+.btn-agent {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: none; border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; font-weight: 500;
+  padding: 5px 10px; border-radius: var(--radius-xs);
+  text-decoration: none; white-space: nowrap;
+  transition: color 0.15s, border-color 0.15s;
+}
+.btn-agent:hover {
+  color: var(--primary);
+  border-color: var(--border-bright);
+}
+
 /* ── Content ── */
 .content { max-width: 640px; margin: 0 auto; padding: 24px 16px; width: 100%; flex: 1; }
 .page { display: flex; flex-direction: column; gap: 16px; }
