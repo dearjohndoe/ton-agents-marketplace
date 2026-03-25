@@ -15,6 +15,7 @@ from resources.sidecar_env import register_sidecar_env
 from resources.payment_protocol import register_payment_protocol
 from resources.result_types import register_result_types
 from resources.create_guide import register_create_guide
+from resources.gotchas import register_gotchas
 
 from config import REGISTRY_ADDRESS  # noqa: F401 — re-exported for convenience
 
@@ -28,6 +29,7 @@ register_sidecar_env(mcp)
 register_payment_protocol(mcp)
 register_result_types(mcp)
 register_create_guide(mcp)
+register_gotchas(mcp)
 
 if __name__ == "__main__":
     mcp.run()
