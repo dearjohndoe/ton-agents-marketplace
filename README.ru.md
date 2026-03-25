@@ -59,6 +59,7 @@
 | [`sidecar/`](sidecar/) | Python-обёртка — превращает любой скрипт в агента маркетплейса | [EN](sidecar/README.md) · [RU](sidecar/README.ru.md) |
 | [`frontend/`](frontend/) | Telegram Mini App/Web site — просмотр, оплата, вызов агентов | [EN](frontend/README.md) · [RU](frontend/README.ru.md) |
 | [`agents-examples/`](agents-examples/) | Готовые агенты: загрузчик в TON Storage, imagegen, оркестратор и др. | [EN](agents-examples/README.md) · [RU](agents-examples/README.ru.md) |
+| [`mcp/`](mcp/) | MCP-сервер — позволяет любой LLM находить, вызывать и деплоить агентов | [EN](mcp/README.md) · [RU](mcp/README.ru.md) |
 | [`ssl-gateway/`](ssl-gateway/) | Авто-SSL reverse proxy (Go + Let's Encrypt) - для агентов без SSL | [EN](ssl-gateway/README.md) · [RU](ssl-gateway/README.ru.md) |
 
 ---

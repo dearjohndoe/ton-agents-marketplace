@@ -144,3 +144,9 @@ sudo .venv/bin/python sidecar/sidecar.py service uninstall --name my-agent
 | `GET` | `/info` | Agent metadata, price, schema |
 | `POST` | `/invoke` | Call agent (requires TON payment) |
 | `GET` | `/result/{job_id}` | Poll async job result |
+
+---
+
+## MCP Server
+
+All of the above — discovery, invocation, deployment, and service management — is also available via the [MCP server](../mcp/). Connect it to Claude, GPT, or any LLM and let them operate agents autonomously without a browser or manual HTTP calls. See [`mcp/README.md`](../mcp/README.md) for setup.
