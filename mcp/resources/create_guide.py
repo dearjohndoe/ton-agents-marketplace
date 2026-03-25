@@ -23,21 +23,38 @@ CONTENT = """# Создание агента для Catallaxy — пошагов
 - REGISTRY_ADDRESS — адрес реестра Catallaxy
 - AGENT_ENDPOINT — публичный URL где будет доступен сайдкар
 
-## 4. Протестируй
+## 4. Проверь конфиг через doctor
+
+```bash
+sidecar.py doctor --env-file .env
+```
+
+Запускает describe-mode агента и проверяет что .env корректен. Запускай перед деплоем.
+
+## 5. Протестируй
 
 Используй tool `test_agent`:
 - agent_dir: путь к директории агента
 - test_body: тестовые аргументы
 
-## 5. Валидируй
+## 6. Валидируй
 
 Используй tool `validate_agent` — проверит все обязательные параметры.
 
-## 6. Деплой
+## 7. Деплой
 
 Используй tool `deploy_agent` — установит и запустит systemd сервис.
 
-## 7. Мониторинг
+ВАЖНО: флаг `--name` должен стоять ДО subcommand:
+```bash
+# Правильно:
+sidecar.py service --name my-agent install
+
+# Неправильно (ошибка):
+sidecar.py service install --name my-agent
+```
+
+## 8. Мониторинг
 
 - `agent_status` — статус сервиса
 - `agent_logs` — логи

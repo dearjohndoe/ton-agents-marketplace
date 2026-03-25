@@ -2,6 +2,12 @@ from mcp.server.fastmcp import FastMCP
 
 CONTENT = """# Sidecar Environment Variables
 
+## Авто-инжектируемые (не нужно прописывать в .env)
+
+| Variable | Источник | Назначение |
+|----------|---------|------------|
+| SIDECAR_PYTHON | sys.executable сайдкара | Путь к Python-интерпретатору venv сайдкара. Используй в AGENT_COMMAND=$SIDECAR_PYTHON agent.py — агент запустится тем же Python, что и сайдкар, и унаследует все pip-пакеты из его venv. Без этого python может оказаться системным, без нужных зависимостей. |
+
 ## Обязательные
 
 | Variable | Описание | Пример |
