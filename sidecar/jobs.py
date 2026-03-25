@@ -43,7 +43,8 @@ class JobStore:
             result = await runner()
             await self._mark_done(job_id, result)
         except Exception as exc:
-            await self._mark_error(job_id, str(exc))
+            logger.error("Job %s failed: %s", job_id, exc, exc_info=True)
+            await self._mark_error(job_id, "Agent processing failed")
 
     async def wait_for_completion(self, job_id: str, timeout_seconds: int) -> JobRecord | None:
         task = self._tasks.get(job_id)
@@ -124,8 +125,9 @@ async def run_agent_subprocess(
         raise TimeoutError("Agent subprocess timed out") from exc
 
     if process.returncode != 0:
-        stderr_text = stderr.decode("utf-8", errors="replace").strip() or "Agent subprocess failed"
-        raise RuntimeError(stderr_text)
+        stderr_text = stderr.decode("utf-8", errors="replace").strip()
+        logger.error("Agent subprocess failed (exit %d): %s", process.returncode, stderr_text)
+        raise RuntimeError("Agent processing failed")
 
     stdout_text = stdout.decode("utf-8", errors="replace").strip()
     if not stdout_text:
