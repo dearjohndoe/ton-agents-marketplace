@@ -29,6 +29,7 @@ logging.basicConfig(
     format="%(asctime)s %(name)s %(levelname)s %(message)s",
     filename=str(_HERE / "orchestrator.log"),
 )
+logger = logging.getLogger(__name__)
 
 ARGS_SCHEMA = {
     "task": {
@@ -142,6 +143,29 @@ async def handle_quote(task: str) -> dict:
 
     # Build quote
     agents_map = {a.sidecar_id: a for a in agents}
+
+    # Truncate chain after the first agent that returns a file —
+    # the executor cannot pass file results between agents.
+    note: str | None = None
+    truncated_chain = []
+    dropped_names = []
+    for step in plan.chain:
+        truncated_chain.append(step)
+        agent = agents_map[step.sidecar_id]
+        if agent.result_schema.get("type") == "file":
+            # Keep this step but drop everything after it
+            remaining = plan.chain[len(truncated_chain):]
+            dropped_names = [agents_map[s.sidecar_id].name for s in remaining]
+            break
+
+    if dropped_names:
+        note = (
+            f"Steps after '{agents_map[truncated_chain[-1].sidecar_id].name}' were removed "
+            f"because file results cannot be forwarded to other agents yet. "
+            f"Dropped: {', '.join(dropped_names)}."
+        )
+        plan.chain = truncated_chain
+
     steps_info = []
     total_agents_cost = 0
 
@@ -185,7 +209,7 @@ async def handle_quote(task: str) -> dict:
     }
     _save_quote(quote_id, quote_data, expires_at)
 
-    return {
+    result: dict = {
         "price": total_price,
         "plan": {
             "quote_id": quote_id,
@@ -199,6 +223,10 @@ async def handle_quote(task: str) -> dict:
         },
         "ttl": QUOTE_TTL,
     }
+    if note:
+        result["note"] = note
+
+    return result
 
 
 async def handle_execute(task: str, quote_id: str) -> dict:

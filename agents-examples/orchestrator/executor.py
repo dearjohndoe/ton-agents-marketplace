@@ -193,11 +193,20 @@ async def execute_chain(
                     session, agent.endpoint, agent.capability, resolved_body, tx_hash, pay_nonce,
                 )
                 step_result.status = "done"
+                # Make file download URLs absolute so the frontend resolves them
+                # against the correct sidecar, not the orchestrator's endpoint.
+                if (
+                    isinstance(agent_result, dict)
+                    and agent_result.get("type") == "file"
+                    and isinstance(agent_result.get("url"), str)
+                    and agent_result["url"].startswith("/")
+                ):
+                    agent_result = {**agent_result, "url": f"{agent.endpoint}{agent_result['url']}"}
                 step_result.result = agent_result
 
             except Exception as exc:
                 logger.exception("Step %d (%s) failed", i, agent.name)
-                step_result.error = str(exc)
+                step_result.error = "Step execution failed"
                 # If an agent fails, we cannot guarantee it will refund us (it might be completely offline/broken).
                 # To avoid losing money globally, we do not refund the user for the current failed step.
                 # We only refund the budget allocated for steps that we haven't even attempted yet.

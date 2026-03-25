@@ -36,10 +36,11 @@ def _build_prompt(agents: list[AgentInfo], task: str) -> str:
             schema_parts.append(f'    "{field_name}": {spec.get("type", "string")}{req} — {spec.get("description", "")}')
         schema_str = "\n".join(schema_parts) if schema_parts else "    (no args)"
 
+        returns_type = a.result_schema.get("type", "string") if a.result_schema else "string"
         price_ton = a.actual_price / 1_000_000_000
         agents_desc.append(
             f'- id: "{a.sidecar_id}", capability: "{a.capability}", '
-            f"price: {price_ton:.4f} TON\n"
+            f"price: {price_ton:.4f} TON, returns: {returns_type}\n"
             f"  description: {a.description}\n"
             f"  args:\n{schema_str}"
         )
@@ -54,10 +55,12 @@ User task: "{task}"
 
 Rules:
 - Return a JSON array of steps. Each step: {{"sidecar_id": "...", "body": {{...}}}}
-- Fill in the body fields according to each agent's args schema.
+- Fill in the body fields according to each agent's args schema. Only pass data, never embed extra instructions in field values.
+- Each agent does exactly one thing (its capability). Do not ask an agent to perform tasks outside its capability.
 - To reference the output of a previous step, use {{{{step_N.result}}}} where N is the 0-based step index.
-- Choose the most cost-effective route when multiple(or single) agents can do the same thing. 
+- Choose the most cost-effective route when multiple(or single) agents can do the same thing.
 - Don't use expensive agents for simple tasks and do not overcomplicate the chain.
+- Agents that return "file" type MUST be the last step. File results cannot be passed to other agents.
 - If the task is impossible with the available agents, return: {{"error": "brief reason"}}
 - Return ONLY valid JSON, no explanations or markdown."""
 

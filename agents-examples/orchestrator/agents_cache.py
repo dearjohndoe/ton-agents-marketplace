@@ -27,6 +27,7 @@ class AgentInfo:
     endpoint: str
     address: str
     args_schema: dict[str, Any] = field(default_factory=dict)
+    result_schema: dict[str, Any] = field(default_factory=dict)
     alive: bool = False
 
 
@@ -76,17 +77,28 @@ def _parse_tx(tx: dict[str, Any]) -> AgentInfo | None:
             endpoint=payload["endpoint"],
             address=msg.get("source", ""),
             args_schema=payload.get("args_schema") or {},
+            result_schema=payload.get("result_schema") or {},
         )
     except Exception:
         return None
 
 
 def _dedupe(agents: list[AgentInfo]) -> list[AgentInfo]:
-    best: dict[str, AgentInfo] = {}
+    """Deduplicate by sidecar_id and by endpoint (keep the most recent heartbeat)."""
+    by_sid: dict[str, AgentInfo] = {}
     for a in agents:
-        if a.sidecar_id not in best:
-            best[a.sidecar_id] = a
-    return list(best.values())
+        if a.sidecar_id not in by_sid:
+            by_sid[a.sidecar_id] = a
+
+    # Also dedupe by endpoint — if a sidecar was restarted with a new id,
+    # the old heartbeat still lives in the registry. Keep only the freshest
+    # (first seen, since TXs are sorted desc by time).
+    by_endpoint: dict[str, AgentInfo] = {}
+    for a in by_sid.values():
+        if a.endpoint not in by_endpoint:
+            by_endpoint[a.endpoint] = a
+
+    return list(by_endpoint.values())
 
 
 async def _fetch_agents_from_chain(

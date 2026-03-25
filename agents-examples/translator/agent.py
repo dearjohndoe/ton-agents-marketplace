@@ -43,6 +43,7 @@ def main():
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     prompt = (
         f"Translate the following text to {target_language}. "
+        "Do not summarize, shorten, or alter the meaning. "
         "Return only the translated text, no explanations or extra content.\n\n"
         f"{text}"
     )
