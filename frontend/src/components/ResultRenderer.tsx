@@ -123,7 +123,7 @@ function FileResult({ result, downloadUrl }: { result: TypedResult; downloadUrl:
       )}
       <div className="result-file-meta">
         {!expired ? (
-          <a href={url} download={fileName} className="btn btn-outline btn-sm result-file-download">
+          <a target="_blank" href={url} download={fileName} className="btn btn-outline btn-sm result-file-download">
             Download {fileName}
           </a>
         ) : (
