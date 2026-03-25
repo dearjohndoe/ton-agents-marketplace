@@ -154,6 +154,7 @@ export interface QuoteResult {
   price: number
   plan: QuotePlan | string | null
   expiresAt: number
+  note: string | null
 }
 
 export async function fetchQuote(
@@ -169,6 +170,7 @@ export async function fetchQuote(
     price: data.price,
     plan: data.plan,
     expiresAt: data.expires_at,
+    note: data.note ?? null,
   }
 }
 
@@ -184,6 +186,18 @@ export async function pingAgent(endpoint: string): Promise<boolean> {
 }
 
 export function resolveDownloadUrl(endpoint: string, path: string): string {
+  if (path.startsWith('http://') || path.startsWith('https://')) {
+    // Absolute URL from a sub-agent — derive endpoint and path, then apply
+    // the same proxy logic as for relative paths.
+    const parsed = new URL(path)
+    const absEndpoint = parsed.origin
+    const absPath = parsed.pathname + parsed.search
+    const mode = getConnectionMode(absEndpoint)
+    if (mode !== 'proxy') {
+      return path
+    }
+    return `${SSL_GATEWAY}${absPath}?endpoint=${encodeURIComponent(absEndpoint)}`
+  }
   const mode = getConnectionMode(endpoint)
   if (mode !== 'proxy') {
     return `${endpoint}${path}`

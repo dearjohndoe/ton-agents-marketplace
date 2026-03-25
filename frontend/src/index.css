@@ -455,6 +455,7 @@ body {
 .quote-step-agent { font-weight: 500; flex: 1; font-size: 12px; }
 .quote-step-cap { color: var(--text-muted); font-size: 11px; }
 .quote-step-price { color: var(--text-muted); font-size: 11px; margin-left: auto; font-family: 'JetBrains Mono', monospace; }
+.quote-note { font-size: 12px; color: var(--text-muted); background: rgba(255, 180, 0, 0.08); border-left: 3px solid rgba(255, 180, 0, 0.5); padding: 6px 10px; border-radius: 4px; margin-top: 4px; }
 .quote-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .quote-price { font-weight: 600; font-size: 13px; color: var(--text); font-family: 'JetBrains Mono', monospace; }
 .quote-timer { font-size: 11px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; }

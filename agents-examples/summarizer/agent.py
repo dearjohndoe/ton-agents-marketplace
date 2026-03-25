@@ -41,7 +41,8 @@ def main():
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     prompt = (
         f"Summarize the following text in no more than {max_sentences} sentences. "
-        "Return only the summary, no explanations or extra content.\n\n"
+        "Keep the summary in the same language as the input text. "
+        "Do not translate. Return only the summary, no explanations or extra content.\n\n"
         f"{text}"
     )
     response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)

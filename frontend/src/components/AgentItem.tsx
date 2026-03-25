@@ -264,6 +264,9 @@ export function AgentItem({ agent, expanded, onToggle }: Props) {
                   {call.quote.plan && typeof call.quote.plan === 'string' && call.quote.plan && (
                     <div className="quote-plan">{call.quote.plan}</div>
                   )}
+                  {call.quote.note && (
+                    <div className="quote-note">{call.quote.note}</div>
+                  )}
                   <div className="quote-meta">
                     <span className="quote-price">{nanoToTon(call.quote.price)} TON</span>
                     <span className={`quote-timer ${call.quoteSecondsLeft === 0 ? 'quote-timer--expired' : ''}`}>
