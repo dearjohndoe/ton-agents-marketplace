@@ -384,7 +384,7 @@ class SidecarApp:
             elif name and name.startswith("file:"):
                 field_name = name[5:]  # strip "file:" prefix
                 file_data = await part.read(decode=False)
-                original_name = part.filename or f"{uuid.uuid4().hex}.bin"
+                original_name = Path(part.filename or "").name or f"{uuid.uuid4().hex}.bin"
                 upload_dir = self._file_store_dir / "uploads" / uuid.uuid4().hex
                 upload_dir.mkdir(parents=True, exist_ok=True)
                 file_path = upload_dir / original_name
