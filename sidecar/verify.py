@@ -147,6 +147,10 @@ class WalletMonitor:
     def get(self, nonce: str) -> Transaction | None:
         return self._by_nonce.get(nonce.strip())
 
+    def consume(self, nonce: str) -> Transaction | None:
+        """Atomically get and remove a cached transaction by nonce."""
+        return self._by_nonce.pop(nonce.strip(), None)
+
     async def _poll(self) -> None:
         try:
             cutoff = time.time() - self.CACHE_TTL
@@ -292,8 +296,12 @@ class PaymentVerifier:
                     raise PaymentVerificationError("Transaction sender is missing")
 
                 comment = _parse_payment_nonce(tx.in_msg.body)
+                # Evict nonce from cache and use the on-chain tx hash (not user-supplied)
+                # to prevent replay attacks with fake tx_hash values.
+                self._monitor.consume(nonce.value)
+                real_tx_hash = tx.cell.hash.hex()
                 return VerifiedPayment(
-                    tx_hash=tx_hash,
+                    tx_hash=real_tx_hash,
                     sender=sender,
                     recipient=self._agent_wallet,
                     amount=amount,

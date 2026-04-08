@@ -556,8 +556,14 @@ class SidecarApp:
                 self.quotes[quote_id].locked = False
             return web.json_response({"error": "Payment verification failed"}, status=502)
 
+        # Dedup against the real on-chain hash (verify() now returns it, not the user-supplied one)
+        if await self.tx_store.is_processed(verified_payment.tx_hash):
+            if quote_id and quote_id in self.quotes:
+                self.quotes[quote_id].locked = False
+            return web.json_response({"error": "Transaction already used"}, status=409)
+
         try:
-            await self.tx_store.mark_processed(tx_hash)
+            await self.tx_store.mark_processed(verified_payment.tx_hash)
         except Exception:
             if quote_id and quote_id in self.quotes:
                 self.quotes[quote_id].locked = False
