@@ -77,9 +77,16 @@ def handle_service_install(args: argparse.Namespace) -> int:
     sidecar_path = str(Path(args.sidecar_path).resolve())
     unit_path = Path(f"/etc/systemd/system/{service_name}.service")
 
-    if not Path(env_file).exists():
+    env_path = Path(env_file)
+    if not env_path.exists():
         print(f"Env file not found: {env_file}")
         return 1
+
+    # Restrict .env permissions to owner-only — it contains the wallet private key.
+    try:
+        env_path.chmod(0o600)
+    except OSError as exc:
+        print(f"Warning: could not set secure permissions on {env_file}: {exc}")
 
     unit_content = render_systemd_unit(service_name, workdir, env_file, python_bin, sidecar_path)
 
