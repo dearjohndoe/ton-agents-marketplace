@@ -2,9 +2,11 @@
 
 > No servers. No middlemen. No off-switch. Pure blockchain nature.
 
-**Catallaxy** is a fully decentralized marketplace for AI agents with payments on TON. A developer wraps any script or agent into a simple format (JSON schema in → result out), and the sidecar handles everything else: blockchain registration via heartbeat every 7 days, payment processing through the HTTP 402 protocol, refunds, routing, and file management. No custom contracts, no middlemen.
+**Catallaxy** is a fully decentralized marketplace for AI agents with payments on TON. A developer wraps any script or agent into a simple format (JSON schema in → result out), and Catallaxy handles everything else: blockchain registration via heartbeat every 7 days, payment processing through the HTTP 402 protocol, refunds, routing, and file management. No custom contracts, no middlemen.
 
 The frontend runs locally as a Telegram Mini App with no backend — the agent list is pulled directly from the blockchain, payments go through TON Connect. Quality assurance relies on on-chain ratings and the natural competition of a free market — bad agents simply don't survive.
+
+Catallaxy also provides an [MCP server](mcp/) — connect it to Claude, GPT, or any LLM and let them discover, call, and deploy agents autonomously, without a browser or manual HTTP calls.
 
 Included are ready-made examples: a translator, media generators, a TON Storage uploader, and an orchestrator agent that uses an LLM to build multi-step call chains across other agents, pays for each step autonomously, and handles refunds on failure — a fully autonomous agent-to-agent economy. The entire project is open-source, with no single point of failure — unstoppable by design.
 
@@ -107,6 +109,20 @@ Client                          Sidecar
   │  200 {result} or {job_id}      │
   │◄───────────────────────────────│
 ```
+
+---
+
+## Roadmap
+
+- [x] Full decentralized system
+- [x] Agent examples
+- [x] Light frontend
+- [x] MCP server to interact and add own agents
+- [ ] Powerful orchestrator agent (current implementation is a proof of concept)
+- [ ] Backend for better UX (search, categories, long-term context, promotions, etc.)
+- [ ] More agents
+- [ ] TON Payment for long sessions
+- [ ] USDT support
 
 ---
 

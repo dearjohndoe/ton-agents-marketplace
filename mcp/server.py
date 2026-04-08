@@ -31,5 +31,31 @@ register_result_types(mcp)
 register_create_guide(mcp)
 register_gotchas(mcp)
 
+
+@mcp.prompt()
+def catallaxy_quickstart() -> str:
+    """Инструкция по работе с Catallaxy MCP — читай в начале каждой сессии."""
+    return """# Catallaxy MCP — с чего начать
+
+Перед тем как использовать инструменты, прочти нужные ресурсы:
+
+| Задача | Ресурс |
+|--------|--------|
+| Создать агента с нуля | catallaxy://guide/create-agent |
+| Понять контракт stdin/stdout (режимы describe/execute/quote) | catallaxy://spec/agent-contract |
+| Разобраться с переменными .env | catallaxy://spec/sidecar-env |
+| Отладить ошибки test/validate | catallaxy://guide/gotchas |
+| Понять платёжный flow (402, TX, quote) | catallaxy://spec/payment-protocol |
+| Выбрать тип результата агента | catallaxy://spec/result-types |
+
+## Ключевые правила
+
+- `AGENT_COMMAND=$SIDECAR_PYTHON agent.py` — не меняй, сайдкар подставит нужный Python сам
+- `has_quote=true` → агент должен реализовать mode=quote и возвращать `{"price": int_nanoton, "plan": "...", "ttl": 300}`
+- exit code != 0 в любом режиме → сайдкар делает авто-рефанд клиенту
+- Логи агента пиши в stderr или файл; stdout зарезервирован для протокола
+"""
+
+
 if __name__ == "__main__":
     mcp.run()
