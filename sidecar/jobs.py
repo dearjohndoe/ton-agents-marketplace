@@ -93,12 +93,15 @@ class JobStore:
                     task.cancel()
 
 
+_SENSITIVE_ENV_KEYS = frozenset({"AGENT_WALLET_PK", "AGENT_WALLET_SEED"})
+
+
 async def run_agent_subprocess(
     command: str, payload: dict[str, Any], timeout_seconds: int, env: dict[str, str] | None = None
 ) -> dict[str, Any]:
     import os
     import sys
-    env_vars = os.environ.copy()
+    env_vars = {k: v for k, v in os.environ.items() if k not in _SENSITIVE_ENV_KEYS}
     env_vars["SIDECAR_PYTHON"] = sys.executable
     if env:
         env_vars.update(env)
