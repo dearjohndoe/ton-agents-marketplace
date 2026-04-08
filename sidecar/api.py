@@ -706,7 +706,7 @@ class SidecarApp:
                 
             return await handler(request)
 
-        max_upload_mb = int(os.environ.get("MAX_UPLOAD_SIZE_MB", "10"))
+        max_upload_mb = int(os.environ.get("MAX_UPLOAD_SIZE_MB", "150"))
         app = web.Application(
             client_max_size=1024 * 1024 * max_upload_mb,
             middlewares=[cors_middleware, rate_limit_middleware],
