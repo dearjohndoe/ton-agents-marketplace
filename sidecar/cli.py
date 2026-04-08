@@ -191,8 +191,7 @@ def handle_doctor(args: argparse.Namespace) -> int:
 
     if settings is not None:
         try:
-            from jobs import _SENSITIVE_ENV_KEYS
-            env_vars = {k: v for k, v in os.environ.items() if k not in _SENSITIVE_ENV_KEYS}
+            env_vars = os.environ.copy()
             env_vars["SIDECAR_PYTHON"] = sys.executable
             result = subprocess.run(
                 settings.agent_command,
