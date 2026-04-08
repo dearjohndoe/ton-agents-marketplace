@@ -682,11 +682,11 @@ class SidecarApp:
             if request.method == "OPTIONS" or request.path == "/info" or request.path.startswith("/download/"):
                 return await handler(request)
                 
-            ip = request.headers.get("X-Forwarded-For", request.remote)
-            if ip:
-                ip = ip.split(",")[0].strip()
+            remote = request.remote or ""
+            if remote and self.settings.trusted_proxy_ips and remote in self.settings.trusted_proxy_ips:
+                ip = (request.headers.get("X-Forwarded-For") or remote).split(",")[0].strip()
             else:
-                ip = "unknown"
+                ip = remote or "unknown"
                 
             now = time.time()
             cutoff = now - self.settings.rate_limit_window

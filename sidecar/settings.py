@@ -27,6 +27,7 @@ class Settings:
     has_quote: bool
     rate_limit_requests: int
     rate_limit_window: int
+    trusted_proxy_ips: frozenset[str]
     file_store_dir: str
     file_store_ttl: int
 
@@ -97,6 +98,9 @@ def load_settings(env_file: str | None = None) -> Settings:
         has_quote=_env_bool("AGENT_HAS_QUOTE", False),
         rate_limit_requests=int(os.getenv("RATE_LIMIT_REQUESTS", "60")),
         rate_limit_window=int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60")),
+        trusted_proxy_ips=frozenset(
+            ip.strip() for ip in os.getenv("TRUSTED_PROXY_IPS", "").split(",") if ip.strip()
+        ),
         file_store_dir=os.getenv("FILE_STORE_DIR", "file_store"),
         file_store_ttl=int(os.getenv("FILE_STORE_TTL", "900")),
     )
