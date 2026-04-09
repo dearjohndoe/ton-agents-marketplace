@@ -74,7 +74,7 @@ def register_invocation_tools(mcp: FastMCP) -> None:
         deadline = asyncio.get_event_loop().time() + poll_timeout
         async with aiohttp.ClientSession() as session:
             while asyncio.get_event_loop().time() < deadline:
-                await asyncio.sleep(3)
+                await asyncio.sleep(1)
                 async with session.get(
                     f"{endpoint}/result/{job_id}",
                     timeout=aiohttp.ClientTimeout(total=10),

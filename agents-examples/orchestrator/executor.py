@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 STEP_REF_RE = re.compile(r"\{\{step_(\d+)\.result\}\}")
 
-POLL_INTERVAL = 3  # seconds
+POLL_INTERVAL = 1  # seconds
 POLL_TIMEOUT = 300  # seconds — max wait for async agent result
 NETWORK_FEE_PER_TX = 10_000_000  # 0.01 TON estimate per outgoing tx
 

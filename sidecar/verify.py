@@ -225,8 +225,8 @@ class WalletMonitor:
 
 
 class PaymentVerifier:
-    VERIFY_TIMEOUT = 30   # seconds to wait for tx to appear on-chain
-    VERIFY_POLL    = 3    # seconds between cache re-checks while waiting
+    VERIFY_TIMEOUT = 15   # seconds to wait for tx to appear on-chain
+    VERIFY_POLL    = 0.5  # seconds between cache re-checks while waiting
 
     def __init__(
         self,
