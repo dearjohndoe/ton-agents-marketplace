@@ -160,7 +160,8 @@ body {
   font-weight: 400;
 }
 .hero p {
-  color: var(--text-muted); margin-top: 6px;
+  color: var(--text-muted);
+  margin: 0 0 12px;
   font-size: 13px; font-weight: 400;
 }
 
@@ -287,6 +288,23 @@ body {
   transition: transform 0.2s ease, color 0.15s;
 }
 .chevron--open { transform: rotate(180deg); color: var(--primary); }
+
+/* ── Locked (detail page) ── */
+.agent-item--locked > .agent-row { cursor: default; background: var(--primary-dim); }
+.agent-item--locked > .agent-row:hover { background: var(--primary-dim); }
+.agent-item--locked .chevron { display: none; }
+.agent-item--locked .agent-summary { cursor: default; }
+
+/* ── Share button ── */
+.share-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border: 1px solid var(--border);
+  background: none; cursor: pointer; color: var(--text-muted);
+  border-radius: var(--radius-xs); font: inherit; font-size: 11px;
+  transition: color 0.15s, border-color 0.15s;
+}
+.share-btn:hover { color: var(--primary); border-color: var(--primary); }
+.share-btn span { font-family: 'JetBrains Mono', monospace; }
 
 /* ── Summary — always visible ── */
 .agent-summary {
@@ -679,8 +697,22 @@ body {
   transition: background 0.25s, border-color 0.25s;
 }
 .footer-inner {
-  max-width: 640px; margin: 0 auto; padding: 0 16px;
-  height: 44px; display: flex; align-items: center; justify-content: space-between;
+  max-width: 640px; margin: 0 auto; padding: 8px 16px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.footer-links {
+  display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
+}
+.footer-link {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 8px; border-radius: var(--radius-xs);
+  font-size: 11px; font-family: 'JetBrains Mono', monospace;
+  color: var(--text-muted); text-decoration: none;
+  transition: color 0.15s, background 0.15s;
+}
+.footer-link:hover { color: var(--primary); background: var(--primary-dim); }
+.footer-bottom {
+  display: flex; align-items: center; justify-content: space-between;
 }
 .footer-copy {
   font-size: 11px; color: var(--text-muted);

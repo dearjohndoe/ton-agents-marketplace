@@ -16,6 +16,7 @@ interface Props {
   agent: Agent
   expanded: boolean
   onToggle: () => void
+  locked?: boolean
 }
 
 function nanoToTon(n: number) {
@@ -52,6 +53,26 @@ function friendlyAddr(raw: string): string {
   } catch {
     return raw
   }
+}
+
+function ShareButton({ sidecarId }: { sidecarId: string }) {
+  const [copied, setCopied] = useState(false)
+  function handleShare() {
+    const url = `${window.location.origin}${import.meta.env.BASE_URL}agents/${sidecarId}`
+    navigator.clipboard.writeText(url).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }
+  return (
+    <button className="share-btn" onClick={handleShare} title="Copy share link">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+        <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+      </svg>
+      <span>{copied ? 'Copied!' : 'Copy link'}</span>
+    </button>
+  )
 }
 
 function CopyButton({ text }: { text: string }) {
@@ -121,7 +142,7 @@ function InputFields({ schema, fields, setFields, setFileFields, disabled }: {
   </>
 }
 
-export function AgentItem({ agent, expanded, onToggle }: Props) {
+export function AgentItem({ agent, expanded, onToggle, locked }: Props) {
   const [tonConnectUI] = useTonConnectUI()
   const walletAddress = useTonAddress()
 
@@ -139,11 +160,11 @@ export function AgentItem({ agent, expanded, onToggle }: Props) {
   const fieldsDisabled = call.busy || (agent.hasQuote === true && call.status === 'quoted')
 
   return (
-    <div className={`agent-item ${expanded ? 'agent-item--open' : ''}`}>
+    <div className={`agent-item ${expanded ? 'agent-item--open' : ''}${locked ? ' agent-item--locked' : ''}`}>
       {/* Row — always visible */}
-      <button className="agent-row" onClick={onToggle} aria-expanded={expanded}>
+      <button className="agent-row" onClick={locked ? undefined : onToggle} aria-expanded={expanded} disabled={locked}>
         <div className="agent-row-left">
-          <span className="agent-row-name">{agent.name || agent.address.slice(0, 10) + '…'}</span>
+          {!locked && <span className="agent-row-name">{agent.name || agent.address.slice(0, 10) + '…'}</span>}
           <div className="agent-row-meta">
             {online === true && !pinging && <span className="tag" style={{color: 'var(--success)', borderColor: 'var(--success)'}}>online</span>}
             {online === false && !pinging && <span className="agent-offline-badge">offline</span>}
@@ -163,7 +184,7 @@ export function AgentItem({ agent, expanded, onToggle }: Props) {
 
       {/* Summary — always visible */}
       {(onChainRating || ratingLoading || ratingError || agent.description) && (
-        <div className="agent-summary" onClick={onToggle}>
+        <div className="agent-summary" onClick={locked ? undefined : onToggle}>
           <RatingBlock rating={onChainRating} loading={ratingLoading} error={ratingError} onRefresh={ratingRefresh} />
           {agent.description && <p className="agent-summary-desc">{agent.description}</p>}
         </div>
@@ -187,6 +208,10 @@ export function AgentItem({ agent, expanded, onToggle }: Props) {
                 {formatAddr(agent.address)}
               </a>
               <CopyButton text={friendlyAddr(agent.address)} />
+            </div>
+            <div className="meta-item">
+              <span className="meta-label">Share</span>
+              <ShareButton sidecarId={agent.sidecarId} />
             </div>
           </div>
 
