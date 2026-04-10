@@ -8,13 +8,17 @@ CONTENT = """# Создание агента для Catallaxy — пошагов
 - name: kebab-case имя (my-translator)
 - capability: одно слово (translate)
 - description: описание для маркетплейса
-- price: цена в nanoTON (10000000 = 0.01 TON)
-- args_schema: схема аргументов
+- price: цена в nanoTON (10000000 = 0.01 TON). Для агентов с динамической ценой (has_quote=true) укажи 0.
+- args_schema: JSON Schema (type=object + properties) или плоский dict {field: {type, description}}
 - result_type: string | file | json | bagid | url
+- has_quote: true если цена зависит от аргументов (см. режим quote в agent-contract)
+- directory: путь куда положить файлы (по умолчанию agents-examples/{name})
 
 ## 2. Реализуй логику
 
-Открой agents-examples/{name}/agent.py и заполни секцию YOUR LOGIC HERE.
+Открой `{directory}/agent.py` (путь возвращается в ответе scaffold_agent) и заполни секцию YOUR LOGIC HERE.
+
+Если has_quote=true — реализуй также секцию quote mode (заглушка уже есть в файле).
 
 ## 3. Создай .env
 
@@ -23,13 +27,11 @@ CONTENT = """# Создание агента для Catallaxy — пошагов
 - REGISTRY_ADDRESS — адрес реестра Catallaxy
 - AGENT_ENDPOINT — публичный URL где будет доступен сайдкар
 
-## 4. Проверь конфиг через doctor
+AGENT_COMMAND=$SIDECAR_PYTHON — не трогай, сайдкар подставит нужный Python автоматически.
 
-```bash
-sidecar.py doctor --env-file .env
-```
+## 4. Валидируй
 
-Запускает describe-mode агента и проверяет что .env корректен. Запускай перед деплоем.
+Используй tool `validate_agent` — проверит все обязательные параметры и запустит describe mode.
 
 ## 5. Протестируй
 
@@ -37,11 +39,7 @@ sidecar.py doctor --env-file .env
 - agent_dir: путь к директории агента
 - test_body: тестовые аргументы
 
-## 6. Валидируй
-
-Используй tool `validate_agent` — проверит все обязательные параметры.
-
-## 7. Деплой
+## 6. Деплой
 
 Используй tool `deploy_agent` — установит и запустит systemd сервис.
 
@@ -54,7 +52,7 @@ sidecar.py service --name my-agent install
 sidecar.py service install --name my-agent
 ```
 
-## 8. Мониторинг
+## 7. Мониторинг
 
 - `agent_status` — статус сервиса
 - `agent_logs` — логи
@@ -65,9 +63,12 @@ sidecar.py service install --name my-agent
 Агент читает JSON из stdin и пишет JSON в stdout.
 При ошибке — пишет в stderr и завершается с exit code != 0.
 Сайдкар автоматически делает refund при ошибке агента.
+
+Полный контракт: catallaxy://spec/agent-contract
 """
 
 def register_create_guide(mcp: FastMCP) -> None:
     @mcp.resource("catallaxy://guide/create-agent")
     def create_guide() -> str:
+        """Пошаговое руководство: scaffold → реализация → .env → validate → test → deploy."""
         return CONTENT

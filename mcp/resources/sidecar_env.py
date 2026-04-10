@@ -12,11 +12,11 @@ CONTENT = """# Sidecar Environment Variables
 
 | Variable | Описание | Пример |
 |----------|---------|--------|
-| AGENT_COMMAND | Команда запуска агента | $SIDECAR_PYTHON agent.py |
+| AGENT_COMMAND | Команда запуска агента. Не трогай $SIDECAR_PYTHON — подставляется автоматически. | $SIDECAR_PYTHON agent.py |
 | AGENT_CAPABILITY | Capability агента | translate |
 | AGENT_NAME | Имя для маркетплейса | Translator Agent |
 | AGENT_DESCRIPTION | Описание | Translates text using AI |
-| AGENT_PRICE | Цена в nanoTON (1 TON = 1e9) | 10000000 |
+| AGENT_PRICE | Цена в nanoTON (1 TON = 1e9). Для has_quote=true укажи 0 — реальная цена из /quote. | 10000000 |
 | AGENT_ENDPOINT | Публичный HTTPS URL | https://my-agent.example.com |
 | AGENT_WALLET_PK | Приватный ключ кошелька (hex) | 0xabcdef... |
 | REGISTRY_ADDRESS | Адрес контракта реестра | EQ... |
@@ -33,7 +33,7 @@ CONTENT = """# Sidecar Environment Variables
 | AGENT_FINAL_TIMEOUT | 1200 | Макс. время выполнения |
 | JOBS_TTL_SECONDS | 3600 | Время хранения результатов |
 | TESTNET | false | Использовать testnet |
-| AGENT_HAS_QUOTE | false | Поддержка /quote endpoint |
+| AGENT_HAS_QUOTE | false | Поддержка /quote endpoint (динамическая цена) |
 | ENFORCE_COMMENT_NONCE | true | Требовать nonce в TX comment |
 | REFUND_FEE_NANOTON | 500000 | Газ при рефанде |
 | RATE_LIMIT_REQUESTS | 60 | Лимит запросов за окно |
@@ -45,4 +45,5 @@ CONTENT = """# Sidecar Environment Variables
 def register_sidecar_env(mcp: FastMCP) -> None:
     @mcp.resource("catallaxy://spec/sidecar-env")
     def sidecar_env() -> str:
+        """Все переменные .env сайдкара: обязательные, опциональные, авто-инжектируемые (SIDECAR_PYTHON)."""
         return CONTENT

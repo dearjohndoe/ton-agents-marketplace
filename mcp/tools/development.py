@@ -6,6 +6,7 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 from lib.agent_runner import run_agent
 
+# Scaffold template — includes quote stub when has_quote=True
 AGENT_TEMPLATE = '''\
 import json
 import sys
@@ -30,7 +31,7 @@ def main():
         return
 
     body = task.get("body") or {{}}
-
+{quote_block}
     # --- YOUR LOGIC HERE ---
     result = ""
     # --- END ---
@@ -44,6 +45,15 @@ if __name__ == "__main__":
     except Exception as exc:
         print(str(exc), file=sys.stderr)
         sys.exit(1)
+'''
+
+QUOTE_BLOCK = '''\
+    if task.get("mode") == "quote":
+        # Return dynamic price in nanoTON based on body contents.
+        # {"price": int_nanoton, "plan": "human-readable plan", "ttl": seconds}
+        # exit(1) here = no quote, client sees an error (no payment taken).
+        raise NotImplementedError("quote mode not implemented")
+
 '''
 
 ENV_EXAMPLE_TEMPLATE = '''\
@@ -68,6 +78,18 @@ python-dotenv>=1.0.0
 
 VALID_ARG_TYPES = {"string", "number", "boolean", "file"}
 
+
+def _extract_fields(args_schema: dict) -> dict:
+    """Normalise args_schema to a flat {field: {type, description}} dict.
+
+    Accepts both the legacy flat format and standard JSON Schema
+    (type=object + properties).  Returns the flat dict for validation.
+    """
+    if args_schema.get("type") == "object" and "properties" in args_schema:
+        return args_schema["properties"]
+    return args_schema
+
+
 def register_development_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
@@ -82,7 +104,11 @@ def register_development_tools(mcp: FastMCP) -> None:
         has_quote: bool = False,
         directory: str | None = None,
     ) -> dict:
-        """Generate a new agent skeleton with all required files."""
+        """Generate a new agent skeleton with all required files.
+
+        Read catallaxy://guide/create-agent for the full step-by-step guide
+        and catallaxy://spec/agent-contract for the stdin/stdout contract.
+        """
         project_root = os.getenv("CATALLAXY_PROJECT_ROOT", "/media/second_disk/cont5")
         agent_dir = Path(directory or f"{project_root}/agents-examples/{name}")
         agent_dir.mkdir(parents=True, exist_ok=True)
@@ -91,10 +117,13 @@ def register_development_tools(mcp: FastMCP) -> None:
         if result_mime_type:
             result_schema["mime_type"] = result_mime_type
 
+        quote_block = QUOTE_BLOCK if has_quote else "\n"
+
         agent_code = AGENT_TEMPLATE.format(
             args_schema=json.dumps(args_schema, indent=4),
             result_schema=json.dumps(result_schema),
             result_type=result_type,
+            quote_block=quote_block,
         )
         (agent_dir / "agent.py").write_text(agent_code)
         (agent_dir / ".env.example").write_text(ENV_EXAMPLE_TEMPLATE.format(
@@ -117,7 +146,11 @@ def register_development_tools(mcp: FastMCP) -> None:
         test_body: dict | None = None,
         timeout: int = 30,
     ) -> dict:
-        """Run agent locally and verify stdin→stdout contract."""
+        """Run agent locally and verify stdin→stdout contract.
+
+        Uses AGENT_COMMAND from the agent's .env (respects $SIDECAR_PYTHON).
+        See catallaxy://guide/gotchas for known pitfalls.
+        """
         errors = []
 
         # describe
@@ -135,11 +168,13 @@ def register_development_tools(mcp: FastMCP) -> None:
                 if not isinstance(args_schema, dict):
                     errors.append("args_schema is not a dict")
                 else:
-                    for fname, fdef in args_schema.items():
-                        if fdef.get("type") not in VALID_ARG_TYPES:
-                            errors.append(f"field '{fname}' has invalid type '{fdef.get('type')}'")
-                        if not isinstance(fdef.get("description"), str):
-                            errors.append(f"field '{fname}' missing description")
+                    # Support both flat {field: {type, desc}} and JSON Schema {type:object, properties:{}}
+                    fields = _extract_fields(args_schema)
+                    for fname, fdef in fields.items():
+                        if not isinstance(fdef, dict):
+                            continue  # skip non-field entries (e.g. "required" list)
+                        if fdef.get("type") not in VALID_ARG_TYPES | {"integer", "array", "object"}:
+                            errors.append(f"field '{fname}' has unusual type '{fdef.get('type')}'")
                     describe_ok = not errors
             except json.JSONDecodeError as e:
                 errors.append(f"describe: invalid JSON: {e}")
@@ -147,7 +182,7 @@ def register_development_tools(mcp: FastMCP) -> None:
         test_result = None
         test_ok = False
         if test_body is not None:
-            cap = list(args_schema.keys())[0] if args_schema else "test"
+            cap = list(args_schema.get("properties", args_schema).keys())[0] if args_schema else "test"
             code, stdout, stderr = await run_agent(agent_dir, {"capability": cap, "body": test_body}, timeout=timeout)
             if code != 0:
                 errors.append(f"execute failed (exit {code}): {stderr}")
@@ -173,7 +208,11 @@ def register_development_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     async def validate_agent(agent_dir: str) -> dict:
-        """Full validation of agent before deployment."""
+        """Full validation of agent before deployment.
+
+        Checks .env completeness and runs describe mode via AGENT_COMMAND.
+        See catallaxy://guide/gotchas if describe mode fails unexpectedly.
+        """
         agent_path = Path(agent_dir)
         checks = []
         warnings = []
@@ -202,8 +241,8 @@ def register_development_tools(mcp: FastMCP) -> None:
         for var in required_vars:
             chk(f"{var} is set", bool(env_values.get(var)))
 
-        # describe mode
-        code, stdout, _ = await run_agent(agent_dir, {"mode": "describe"}, timeout=10)
+        # describe mode — uses AGENT_COMMAND from .env via run_agent
+        code, stdout, stderr = await run_agent(agent_dir, {"mode": "describe"}, timeout=10)
         describe_ok = False
         if code == 0:
             try:
@@ -211,12 +250,16 @@ def register_development_tools(mcp: FastMCP) -> None:
                 describe_ok = isinstance(desc.get("args_schema"), dict)
             except Exception:
                 pass
+        else:
+            warnings.append(f"describe mode stderr: {stderr.strip()[:200]}")
         chk("describe mode works", describe_ok)
 
-        # price positive
+        # price positive — for has_quote=true, 0 is acceptable (dynamic pricing)
         price_str = env_values.get("AGENT_PRICE", "0")
+        has_quote = env_values.get("AGENT_HAS_QUOTE", "false").lower() == "true"
         try:
-            chk("AGENT_PRICE is positive", int(price_str) > 0)
+            price_val = int(price_str)
+            chk("AGENT_PRICE is positive", price_val > 0 or has_quote)
         except ValueError:
             chk("AGENT_PRICE is positive", False)
 
@@ -257,7 +300,7 @@ def register_development_tools(mcp: FastMCP) -> None:
             python_bin, sidecar_py,
             "service", "--name", service_name,
             "install",
-            "--workdir", str(Path(project_root).resolve()),
+            "--workdir", str(Path(agent_dir).resolve()),
             "--env-file", env_path,
             "--sidecar-path", sidecar_py,
         ]
@@ -288,7 +331,6 @@ def register_development_tools(mcp: FastMCP) -> None:
         sub = props.get("SubState", "")
         ts = props.get("ActiveEnterTimestamp", "")
 
-        # heartbeat: check logs for last heartbeat line
         return {"active": active, "sub_state": sub, "active_since": ts}
 
     @mcp.tool()

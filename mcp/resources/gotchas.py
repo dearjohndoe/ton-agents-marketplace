@@ -2,6 +2,20 @@ from mcp.server.fastmcp import FastMCP
 
 CONTENT = """# Известные грабли при разработке агентов
 
+## test_agent / validate_agent используют AGENT_COMMAND из .env
+
+`run_agent` читает `AGENT_COMMAND` из `.env` агента и подставляет
+`$SIDECAR_PYTHON` → `sys.executable` сервера MCP.
+Убедись что `.env` существует и `AGENT_COMMAND` прописан до запуска этих инструментов.
+
+Ручная проверка без MCP:
+```bash
+echo '{"mode":"describe"}' | $SIDECAR_PYTHON agent.py
+echo '{"capability":"...", "body":{...}}' | $SIDECAR_PYTHON agent.py
+```
+
+---
+
 ## TonAPI: объекты могут приходить как строки
 
 TonAPI иногда возвращает вложенные объекты (nft, collection, contract) как строку-адрес
@@ -32,19 +46,6 @@ col = (col_raw.get("name") if isinstance(col_raw, dict) else None) or "Unknown C
 ```
 
 Правило: всегда делай isinstance(x, dict) перед .get() для вложенных объектов TonAPI.
-
----
-
-## test_agent игнорирует AGENT_COMMAND, всегда запускает `python agent.py`
-
-MCP tool `test_agent` использует захардкоженный `python` вместо SIDECAR_PYTHON.
-Если системный python не имеет нужных пакетов — тест упадёт даже если агент работает корректно.
-
-Воркараунд: проверяй через `doctor` или запускай агент вручную:
-```bash
-echo '{"mode":"describe"}' | $SIDECAR_PYTHON agent.py
-echo '{"capability":"...", "body":{...}}' | $SIDECAR_PYTHON agent.py
-```
 
 ---
 
@@ -82,4 +83,5 @@ kill -9 <PID>
 def register_gotchas(mcp: FastMCP) -> None:
     @mcp.resource("catallaxy://guide/gotchas")
     def gotchas() -> str:
+        """Известные грабли: AGENT_COMMAND/python path, TonAPI quirks, workdir, порты, concurrency."""
         return CONTENT

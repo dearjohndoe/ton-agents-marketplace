@@ -384,7 +384,7 @@ class SidecarApp:
             elif name and name.startswith("file:"):
                 field_name = name[5:]  # strip "file:" prefix
                 file_data = await part.read(decode=False)
-                original_name = part.filename or f"{uuid.uuid4().hex}.bin"
+                original_name = Path(part.filename or "").name or f"{uuid.uuid4().hex}.bin"
                 upload_dir = self._file_store_dir / "uploads" / uuid.uuid4().hex
                 upload_dir.mkdir(parents=True, exist_ok=True)
                 file_path = upload_dir / original_name
@@ -556,8 +556,14 @@ class SidecarApp:
                 self.quotes[quote_id].locked = False
             return web.json_response({"error": "Payment verification failed"}, status=502)
 
+        # Dedup against the real on-chain hash (verify() now returns it, not the user-supplied one)
+        if await self.tx_store.is_processed(verified_payment.tx_hash):
+            if quote_id and quote_id in self.quotes:
+                self.quotes[quote_id].locked = False
+            return web.json_response({"error": "Transaction already used"}, status=409)
+
         try:
-            await self.tx_store.mark_processed(tx_hash)
+            await self.tx_store.mark_processed(verified_payment.tx_hash)
         except Exception:
             if quote_id and quote_id in self.quotes:
                 self.quotes[quote_id].locked = False
@@ -676,11 +682,11 @@ class SidecarApp:
             if request.method == "OPTIONS" or request.path == "/info" or request.path.startswith("/download/"):
                 return await handler(request)
                 
-            ip = request.headers.get("X-Forwarded-For", request.remote)
-            if ip:
-                ip = ip.split(",")[0].strip()
+            remote = request.remote or ""
+            if remote and self.settings.trusted_proxy_ips and remote in self.settings.trusted_proxy_ips:
+                ip = (request.headers.get("X-Forwarded-For") or remote).split(",")[0].strip()
             else:
-                ip = "unknown"
+                ip = remote or "unknown"
                 
             now = time.time()
             cutoff = now - self.settings.rate_limit_window

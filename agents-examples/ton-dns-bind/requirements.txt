@@ -1,0 +1,5 @@
+requests>=2.31.0
+python-dotenv>=1.0.0
+qrcode[pil]>=7.4
+tonutils>=2.0.0
+pytoniq-core>=0.1.36

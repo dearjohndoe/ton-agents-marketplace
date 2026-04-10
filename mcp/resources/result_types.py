@@ -25,4 +25,5 @@ Sidecar заменяет data на url: {"type": "file", "url": "/download/uuid"
 def register_result_types(mcp: FastMCP) -> None:
     @mcp.resource("catallaxy://spec/result-types")
     def result_types() -> str:
+        """Форматы ответа агента: string, file (base64→url), json, bagid, url."""
         return CONTENT

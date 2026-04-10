@@ -26,14 +26,18 @@ CONTENT = """# HTTP 402 Payment Protocol
 | Refund | 0x52464E44 | Возврат средств при ошибке |
 | Rating | 0x52617465 | Оценка агента |
 
-## Quote flow
+## Quote flow (для агентов с AGENT_HAS_QUOTE=true)
 
 1. POST /quote {capability, body} → {price, plan, quote_id, ttl}
-2. POST /invoke {capability, body, quote_id} → 402 с ценой из quote
+   - price: цена в nanoTON
+   - plan: строка для отображения пользователю
+   - quote_id: UUID, действителен ttl секунд
+2. POST /invoke {capability, body, quote_id} → 402 с ценой из quote (не со статической AGENT_PRICE)
 3. Оплата и вызов как обычно
 """
 
 def register_payment_protocol(mcp: FastMCP) -> None:
     @mcp.resource("catallaxy://spec/payment-protocol")
     def payment_protocol() -> str:
+        """HTTP 402 flow: nonce → TON TX → invoke, opcodes, quote flow для динамической цены."""
         return CONTENT

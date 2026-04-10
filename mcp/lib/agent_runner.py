@@ -10,15 +10,50 @@ if _SIDECAR not in sys.path:
 from jobs import run_agent_subprocess  # noqa: E402
 
 
-async def run_agent(agent_dir: str, stdin_data: dict, timeout: int = 30) -> tuple[int, str, str]:
-    """Run agent.py with JSON stdin. Returns (exit_code, stdout, stderr).
+def _resolve_command(agent_dir: str) -> str:
+    """Read AGENT_COMMAND from agent's .env and resolve $SIDECAR_PYTHON.
 
-    Uses create_subprocess_shell (same as sidecar) so SIDECAR_PYTHON expands correctly.
+    Falls back to `sys.executable agent.py` if .env is missing or
+    AGENT_COMMAND is not set.
+    """
+    env_path = os.path.join(agent_dir, ".env")
+    command: str | None = None
+
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                if k.strip() == "AGENT_COMMAND":
+                    command = v.strip()
+                    break
+
+    if not command:
+        command = f"$SIDECAR_PYTHON {os.path.join(agent_dir, 'agent.py')}"
+
+    # $SIDECAR_PYTHON → the interpreter that launched the sidecar/MCP server
+    command = command.replace("$SIDECAR_PYTHON", sys.executable)
+
+    # If the script arg is relative (e.g. "agent.py"), resolve against agent_dir
+    parts = command.split(None, 1)
+    if len(parts) == 2 and not os.path.isabs(parts[1]):
+        command = f"{parts[0]} {os.path.join(agent_dir, parts[1])}"
+
+    return command
+
+
+async def run_agent(agent_dir: str, stdin_data: dict, timeout: int = 30) -> tuple[int, str, str]:
+    """Run agent with JSON stdin. Returns (exit_code, stdout, stderr).
+
+    Resolves AGENT_COMMAND from the agent's .env and substitutes
+    $SIDECAR_PYTHON with sys.executable — same Python that runs the sidecar.
     """
     import asyncio
     import json
 
-    command = f"python {os.path.join(agent_dir, 'agent.py')}"
+    command = _resolve_command(agent_dir)
     stdin_bytes = json.dumps(stdin_data).encode()
 
     proc = await asyncio.create_subprocess_shell(
