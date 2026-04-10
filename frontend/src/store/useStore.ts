@@ -19,6 +19,7 @@ interface Store {
   init: () => Promise<void>
   refresh: () => Promise<void>
   loadMore: () => Promise<void>
+  fetchMore: () => Promise<void>
 }
 
 function mergeAgents(existing: Agent[], incoming: Agent[]): Agent[] {
@@ -72,6 +73,24 @@ export const useStore = create<Store>()(
       refresh: async () => {
         set({ lastFetchTime: null, cursor: null, hasMoreOnChain: true })
         await get().init()
+      },
+
+      fetchMore: async () => {
+        const { hasMoreOnChain, cursor, loading } = get()
+        if (loading || !hasMoreOnChain) return
+        set({ loading: true, error: null })
+        try {
+          const { agents, hasMore, nextCursor } = await fetchAgentPage(cursor ?? undefined)
+          set(s => ({
+            allAgents: mergeAgents(s.allAgents, agents),
+            hasMoreOnChain: hasMore,
+            cursor: nextCursor,
+          }))
+        } catch {
+          set({ error: 'Failed to load agents.' })
+        } finally {
+          set({ loading: false })
+        }
       },
 
       loadMore: async () => {

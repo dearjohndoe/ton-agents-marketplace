@@ -20,3 +20,6 @@ tests/
 .quotes_cache.db
 TASK_*
 orchestrator.log
+.agents
+.claude
+skills-lock.json
