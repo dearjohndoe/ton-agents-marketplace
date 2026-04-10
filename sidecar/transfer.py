@@ -55,7 +55,7 @@ def text_comment_body(text: str) -> Cell:
 
 
 SEND_MAX_RETRIES = 3
-SEND_RETRY_DELAYS = [2, 5, 10]  # seconds between retries
+SEND_RETRY_DELAYS = [0.5, 2, 5]  # seconds between retries
 
 
 class TransferSender:

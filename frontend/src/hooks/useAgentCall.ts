@@ -132,7 +132,7 @@ export function useAgentCall(
               else { setStatus('error'); setErrorMsg(r.error ?? 'Error') }
             }
           } catch { clearInterval(pollRef.current!); setStatus('error'); setErrorMsg('Connection lost') }
-        }, 2000)
+        }, 1000)
       }
     } catch (err: any) {
       setStatus('error')
