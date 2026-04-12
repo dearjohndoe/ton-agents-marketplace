@@ -47,7 +47,13 @@ def _agent_to_dict(a: AgentInfo, pinged: bool = False) -> dict[str, Any]:
         "args_schema": a.args_schema,
         "alive": a.alive,
         "actual_price": a.actual_price,
+        "payment_rails": (
+            (["TON"] if a.price > 0 else []) + (["USDT"] if a.price_usdt > 0 else [])
+        ) or ["TON"],
     }
+    if a.price_usdt:
+        d["price_usdt"] = a.price_usdt
+        d["price_usdt_human"] = f"{a.price_usdt / 1e6:.6f}".rstrip("0").rstrip(".")
     if pinged:
         actual_ton = f"{a.actual_price / 1e9:.9f}".rstrip("0").rstrip(".")
         d["actual_price_ton"] = actual_ton
@@ -112,14 +118,24 @@ def register_discovery_tools(mcp: FastMCP) -> None:
                         data = await resp.json()
                         pr = data.get("payment_request") or {}
                         amount = int(pr.get("amount", 0))
-                        return {
+                        result: dict[str, Any] = {
                             "alive": True,
                             "actual_price": amount,
                             "actual_price_ton": f"{amount / 1e9:.9f}".rstrip("0").rstrip("."),
                             "payment_address": pr.get("address", ""),
+                            "payment_rails": [],
                         }
+                        for opt in data.get("payment_options") or []:
+                            result["payment_rails"].append(opt.get("rail"))
+                            if opt.get("rail") == "USDT":
+                                usdt_amt = int(opt.get("amount", 0))
+                                result["price_usdt"] = usdt_amt
+                                result["price_usdt_human"] = f"{usdt_amt / 1e6:.6f}".rstrip("0").rstrip(".")
+                        if not result["payment_rails"]:
+                            result["payment_rails"] = ["TON"]
+                        return result
                     if resp.status == 400:
-                        return {"alive": True, "actual_price": 0, "actual_price_ton": "0", "payment_address": ""}
-                    return {"alive": False, "actual_price": 0, "actual_price_ton": "0", "payment_address": ""}
+                        return {"alive": True, "actual_price": 0, "actual_price_ton": "0", "payment_address": "", "payment_rails": ["TON"]}
+                    return {"alive": False, "actual_price": 0, "actual_price_ton": "0", "payment_address": "", "payment_rails": []}
         except Exception:
-            return {"alive": False, "actual_price": 0, "actual_price_ton": "0", "payment_address": ""}
+            return {"alive": False, "actual_price": 0, "actual_price_ton": "0", "payment_address": "", "payment_rails": []}
