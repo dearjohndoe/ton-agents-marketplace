@@ -1,18 +1,18 @@
 import { useState, useEffect, useRef } from 'react'
 import type { FormEvent } from 'react'
-import { Address } from '@ton/core'
+import { Address, toNano } from '@ton/core'
 import { invokeAgent, pollResult, fetchQuote, invokePreflight, getConnectionMode, checkGatewayHealth } from '../lib/agentClient'
-import type { QuoteResult, PaymentRequest, ConnectionMode } from '../lib/agentClient'
-import { buildPaymentPayload, bocToMsgHash } from '../lib/crypto'
+import type { QuoteResult, PaymentRequest, PaymentOption, ConnectionMode } from '../lib/agentClient'
+import { buildPaymentPayload, buildJettonTransferPayload, bocToMsgHash, resolveJettonWallet } from '../lib/crypto'
 import type { Agent } from '../types'
-import { TESTNET } from '../config'
+import { TESTNET, TONCENTER_BASE } from '../config'
 
 export type CallStatus = 'idle' | 'quoting' | 'quoted' | 'paying' | 'invoking' | 'polling' | 'done' | 'error'
 
 export function useAgentCall(
   agent: Agent,
   expanded: boolean,
-  tonConnectUI: { sendTransaction: (params: any) => Promise<{ boc: string }> },
+  tonConnectUI: { sendTransaction: (params: any) => Promise<{ boc: string }>; account?: { address: string } | null },
 ) {
   const [fields, setFields] = useState<Record<string, string>>({})
   const [fileFields, setFileFields] = useState<Record<string, File>>({})
@@ -22,6 +22,10 @@ export function useAgentCall(
   const [quote, setQuote] = useState<QuoteResult | null>(null)
   const [quoteSecondsLeft, setQuoteSecondsLeft] = useState(0)
   const [lastNonce, setLastNonce] = useState('')
+  const [paymentOptions, setPaymentOptions] = useState<PaymentOption[]>([])
+  const [selectedRail, setSelectedRail] = useState<string>(() =>
+    agent.price > 0 ? 'TON' : agent.priceUsdt ? 'USDT' : 'TON'
+  )
   const [connMode, setConnMode] = useState<ConnectionMode>(() => getConnectionMode(agent.endpoint))
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -88,9 +92,21 @@ export function useAgentCall(
 
     const body = buildBody()
     let paymentRequest: PaymentRequest
+    let rail = selectedRail
+    let preflightOptions: PaymentOption[] = []
 
     try {
-      paymentRequest = await invokePreflight(agent.endpoint, agent.capabilities[0] ?? '', body, quote?.quoteId)
+      const preflight = await invokePreflight(agent.endpoint, agent.capabilities[0] ?? '', body, quote?.quoteId)
+      paymentRequest = preflight.paymentRequest
+      preflightOptions = preflight.paymentOptions
+      setPaymentOptions(preflightOptions)
+
+      // Pick the selected rail option, fallback to first available
+      const chosen = preflightOptions.find(o => o.rail === rail) ?? preflightOptions[0]
+      if (chosen) {
+        rail = chosen.rail
+        paymentRequest = { address: chosen.address, amount: chosen.amount, nonce: chosen.memo, rail: chosen.rail }
+      }
     } catch (err: any) {
       setStatus('error')
       setErrorMsg(err?.message ?? 'Failed to reach agent')
@@ -101,12 +117,39 @@ export function useAgentCall(
 
     let txBoc: string
     try {
-      const recipientAddress = Address.parse(paymentRequest.address).toString({ bounceable: false, urlSafe: true, testOnly: TESTNET })
-      const res = await tonConnectUI.sendTransaction({
-        validUntil: Math.floor(Date.now() / 1000) + 300,
-        messages: [{ address: recipientAddress, amount: paymentRequest.amount, payload: buildPaymentPayload(paymentRequest.nonce) }],
-      })
-      txBoc = bocToMsgHash(res.boc)
+      if (rail === 'USDT') {
+        // Jetton transfer: send to user's USDT jetton wallet
+        const usdtOption = paymentRequest
+        const userAddr = Address.parse(tonConnectUI.account?.address ?? '').toString({ bounceable: false, urlSafe: true, testOnly: TESTNET })
+        const usdtPaymentOption = preflightOptions.find(o => o.rail === 'USDT')
+        const master = usdtPaymentOption?.token?.master ?? ''
+        if (!master) throw new Error('USDT master address not available')
+
+        const userJettonWallet = await resolveJettonWallet(TONCENTER_BASE, master, userAddr)
+        const payload = buildJettonTransferPayload(
+          usdtOption.address,
+          BigInt(usdtOption.amount),
+          usdtOption.nonce,
+          userAddr,
+        )
+        const res = await tonConnectUI.sendTransaction({
+          validUntil: Math.floor(Date.now() / 1000) + 300,
+          messages: [{
+            address: userJettonWallet,
+            amount: toNano('0.1').toString(),  // gas for jetton transfer
+            payload,
+          }],
+        })
+        txBoc = bocToMsgHash(res.boc)
+      } else {
+        // Native TON transfer
+        const recipientAddress = Address.parse(paymentRequest.address).toString({ bounceable: false, urlSafe: true, testOnly: TESTNET })
+        const res = await tonConnectUI.sendTransaction({
+          validUntil: Math.floor(Date.now() / 1000) + 300,
+          messages: [{ address: recipientAddress, amount: paymentRequest.amount, payload: buildPaymentPayload(paymentRequest.nonce) }],
+        })
+        txBoc = bocToMsgHash(res.boc)
+      }
     } catch (err: any) {
       setStatus('error')
       setErrorMsg(err?.message === 'Reject request' ? 'Payment cancelled' : 'Payment failed')
@@ -115,7 +158,7 @@ export function useAgentCall(
 
     setStatus('invoking')
     try {
-      const res = await invokeAgent(agent.endpoint, txBoc, paymentRequest.nonce, agent.capabilities[0] ?? '', body, quote?.quoteId, fileFields)
+      const res = await invokeAgent(agent.endpoint, txBoc, paymentRequest.nonce, agent.capabilities[0] ?? '', body, quote?.quoteId, fileFields, rail)
 
       if (res.status === 'done') {
         setResult(res.result); setStatus('done')
@@ -148,6 +191,7 @@ export function useAgentCall(
     setResult(null)
     setQuote(null)
     setLastNonce('')
+    setPaymentOptions([])
   }
 
   function resetQuote() {
@@ -161,6 +205,7 @@ export function useAgentCall(
     status, result, errorMsg,
     quote, quoteSecondsLeft,
     lastNonce, connMode,
+    paymentOptions, selectedRail, setSelectedRail,
     busy, hasSchema,
     handleGetQuote, handleSubmit, reset, resetQuote,
   }

@@ -24,6 +24,24 @@ function nanoToTon(n: number) {
   return t < 0.001 ? t.toExponential(2) : t.toFixed(3).replace(/\.?0+$/, '')
 }
 
+function microToUsdt(n: number) {
+  const t = n / 1e6
+  return t < 0.01 ? t.toExponential(2) : t.toFixed(2).replace(/\.?0+$/, '')
+}
+
+function PriceBadge({ agent }: { agent: Agent }) {
+  const hasTon = agent.price > 0
+  const hasUsdt = agent.priceUsdt != null && agent.priceUsdt > 0
+  if (!hasTon && !hasUsdt) return <span>Free</span>
+  return (
+    <>
+      {hasTon && <span className="price-ton">{nanoToTon(agent.price)} TON</span>}
+      {hasTon && hasUsdt && <span className="price-sep"> / </span>}
+      {hasUsdt && <span className="price-usdt">{microToUsdt(agent.priceUsdt!)} USDT</span>}
+    </>
+  )
+}
+
 const connLabel: Record<ConnectionMode, string> = {
   direct: 'https', proxy: 'via proxy', insecure: 'http',
 }
@@ -173,7 +191,7 @@ export function AgentItem({ agent, expanded, onToggle, locked }: Props) {
           </div>
         </div>
         <div className="agent-row-right">
-          <span className="agent-row-price">{agent.hasQuote ? `from ${nanoToTon(agent.price)} TON` : `${nanoToTon(agent.price)} TON`}</span>
+          <span className="agent-row-price">{agent.hasQuote && 'from '}<PriceBadge agent={agent} /></span>
           <span className={`chevron ${expanded ? 'chevron--open' : ''}`}>
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
               <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
@@ -293,7 +311,7 @@ export function AgentItem({ agent, expanded, onToggle, locked }: Props) {
                     <div className="quote-note">{call.quote.note}</div>
                   )}
                   <div className="quote-meta">
-                    <span className="quote-price">{nanoToTon(call.quote.price)} TON</span>
+                    <span className="quote-price">{nanoToTon(call.quote.price)} TON{agent.priceUsdt ? ` / ${microToUsdt(agent.priceUsdt)} USDT` : ''}</span>
                     <span className={`quote-timer ${call.quoteSecondsLeft === 0 ? 'quote-timer--expired' : ''}`}>
                       {call.quoteSecondsLeft > 0 ? `Expires in ${call.quoteSecondsLeft}s` : 'Quote expired'}
                     </span>
@@ -317,7 +335,9 @@ export function AgentItem({ agent, expanded, onToggle, locked }: Props) {
                       : call.status === 'invoking' ? 'Calling agent…'
                       : call.status === 'polling' ? 'Waiting for result…'
                       : call.quoteSecondsLeft === 0 ? 'Quote expired'
-                      : `Approve & Pay ${nanoToTon(call.quote!.price)} TON`}
+                      : call.selectedRail === 'USDT' && agent.priceUsdt
+                        ? `Approve & Pay ${microToUsdt(agent.priceUsdt)} USDT`
+                        : `Approve & Pay ${nanoToTon(call.quote!.price)} TON`}
                   </button>
                   <button type="button" className="btn btn-outline btn-sm" onClick={() => call.resetQuote()}>
                     Get new quote
@@ -328,12 +348,34 @@ export function AgentItem({ agent, expanded, onToggle, locked }: Props) {
                   {call.status === 'quoting' ? 'Getting quote…' : 'Get Quote'}
                 </button>
               ) : (
-                <button type="submit" className="btn btn-primary" disabled={call.busy || online === false}>
-                  {call.status === 'paying' ? 'Waiting for payment…'
-                    : call.status === 'invoking' ? 'Calling agent…'
-                    : call.status === 'polling' ? 'Waiting for result…'
-                    : `Pay ${nanoToTon(agent.price)} TON & Execute`}
-                </button>
+                <>
+                  {agent.price > 0 && agent.priceUsdt != null && agent.priceUsdt > 0 && (
+                    <div className="rail-selector">
+                      <label className="rail-option">
+                        <input type="radio" name="rail" value="TON"
+                          checked={call.selectedRail === 'TON'}
+                          onChange={() => call.setSelectedRail('TON')}
+                          disabled={call.busy} />
+                        <span>TON</span>
+                      </label>
+                      <label className="rail-option">
+                        <input type="radio" name="rail" value="USDT"
+                          checked={call.selectedRail === 'USDT'}
+                          onChange={() => call.setSelectedRail('USDT')}
+                          disabled={call.busy} />
+                        <span>USDT</span>
+                      </label>
+                    </div>
+                  )}
+                  <button type="submit" className="btn btn-primary" disabled={call.busy || online === false}>
+                    {call.status === 'paying' ? 'Waiting for payment…'
+                      : call.status === 'invoking' ? 'Calling agent…'
+                      : call.status === 'polling' ? 'Waiting for result…'
+                      : call.selectedRail === 'USDT' && agent.priceUsdt
+                        ? `Pay ${microToUsdt(agent.priceUsdt)} USDT & Execute`
+                        : `Pay ${nanoToTon(agent.price)} TON & Execute`}
+                  </button>
+                </>
               )}
             </form>
           )}
