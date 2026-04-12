@@ -1,0 +1,76 @@
+name: Sidecar Tests
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'sidecar/**'
+      - '.github/workflows/sidecar-tests.yml'
+  pull_request:
+    paths:
+      - 'sidecar/**'
+      - '.github/workflows/sidecar-tests.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sidecar
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: sidecar/requirements.txt
+
+      - name: Install runtime dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install test dependencies
+        run: pip install pytest pytest-asyncio pytest-cov coverage
+
+      - name: Run tests with coverage
+        run: |
+          python -m pytest tests \
+            --cov=. \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-report=html:htmlcov \
+            --junitxml=pytest-report.xml
+
+      - name: Upload coverage HTML artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-coverage-html
+          path: sidecar/htmlcov
+          retention-days: 14
+
+      - name: Upload coverage XML artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-coverage-xml
+          path: sidecar/coverage.xml
+          retention-days: 14
+
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-pytest-report
+          path: sidecar/pytest-report.xml
+          retention-days: 14
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          python -m coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY" || true

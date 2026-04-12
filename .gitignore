@@ -17,9 +17,16 @@ PITCH.md
 PROJECT.md
 file_storage
 tests/
+!sidecar/tests/
+!sidecar/tests/**
+sidecar/.coverage
+sidecar/coverage.xml
+sidecar/pytest-report.xml
+sidecar/htmlcov/
 .quotes_cache.db
 TASK_*
 orchestrator.log
 .agents
 .claude
 skills-lock.json
+__pycache__
