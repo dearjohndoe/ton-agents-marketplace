@@ -24,6 +24,7 @@ class Settings:
     tx_db_path: str
     enforce_comment_nonce: bool
     refund_fee_nanoton: int
+    agent_price_usdt: int | None
     has_quote: bool
     rate_limit_requests: int
     rate_limit_window: int
@@ -62,7 +63,6 @@ def load_settings(env_file: str | None = None) -> Settings:
         "AGENT_CAPABILITY",
         "AGENT_NAME",
         "AGENT_DESCRIPTION",
-        "AGENT_PRICE",
         "AGENT_ENDPOINT",
         "AGENT_WALLET_PK",
         "REGISTRY_ADDRESS",
@@ -70,6 +70,9 @@ def load_settings(env_file: str | None = None) -> Settings:
     missing = [key for key in required_keys if not os.getenv(key)]
     if missing:
         raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
+
+    if not os.getenv("AGENT_PRICE") and not os.getenv("AGENT_PRICE_USD"):
+        raise RuntimeError("At least one of AGENT_PRICE or AGENT_PRICE_USD must be set")
 
     agent_wallet_pk = os.environ["AGENT_WALLET_PK"]
     testnet = _env_bool("TESTNET", False)
@@ -79,7 +82,7 @@ def load_settings(env_file: str | None = None) -> Settings:
         capability=os.environ["AGENT_CAPABILITY"],
         agent_name=os.environ["AGENT_NAME"],
         agent_description=os.environ["AGENT_DESCRIPTION"],
-        agent_price=int(os.environ["AGENT_PRICE"]),
+        agent_price=int(os.getenv("AGENT_PRICE", "0")),
         agent_endpoint=os.environ["AGENT_ENDPOINT"],
         agent_wallet=_derive_wallet_address(agent_wallet_pk, testnet),
         agent_wallet_pk=agent_wallet_pk,
@@ -95,6 +98,7 @@ def load_settings(env_file: str | None = None) -> Settings:
         tx_db_path=os.getenv("SIDECAR_TX_DB_PATH", "processed_txs.db"),
         enforce_comment_nonce=_env_bool("ENFORCE_COMMENT_NONCE", True),
         refund_fee_nanoton=int(os.getenv("REFUND_FEE_NANOTON", "500000")),
+        agent_price_usdt=int(os.environ["AGENT_PRICE_USD"]) if os.getenv("AGENT_PRICE_USD") else None,
         has_quote=_env_bool("AGENT_HAS_QUOTE", False),
         rate_limit_requests=int(os.getenv("RATE_LIMIT_REQUESTS", "60")),
         rate_limit_window=int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60")),

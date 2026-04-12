@@ -25,6 +25,7 @@ class HeartbeatConfig:
     description: str
     args_schema: dict[str, Any]
     has_quote: bool = False
+    price_usdt: int | None = None
     sidecar_id: str | None = None
     result_schema: dict[str, Any] | None = None
 
@@ -55,6 +56,8 @@ class HeartbeatManager:
         }
         if self._config.has_quote:
             payload["has_quote"] = True
+        if self._config.price_usdt is not None:
+            payload["price_usdt"] = self._config.price_usdt
         if self._config.sidecar_id:
             payload["sidecar_id"] = self._config.sidecar_id
         if self._config.result_schema:
