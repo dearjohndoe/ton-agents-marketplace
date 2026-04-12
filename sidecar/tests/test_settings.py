@@ -48,6 +48,9 @@ REQUIRED_KEYS = {
     "REGISTRY_ADDRESS": "EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 }
 
+# Keys that are truly required (always checked)
+_ALWAYS_REQUIRED = {k for k in REQUIRED_KEYS if k != "AGENT_PRICE"}
+
 
 def _apply_required(monkeypatch, overrides: dict[str, str] | None = None):
     for key, val in REQUIRED_KEYS.items():
@@ -65,16 +68,41 @@ def test_load_settings_missing_required_raises(clean_env):
     with pytest.raises(RuntimeError) as exc:
         load_settings(env_file="/nonexistent/.env")
     msg = str(exc.value)
-    for key in REQUIRED_KEYS:
+    for key in _ALWAYS_REQUIRED:
         assert key in msg
 
 
 def test_load_settings_missing_single_key_raises(clean_env, monkeypatch):
     _apply_required(monkeypatch)
-    monkeypatch.delenv("AGENT_PRICE", raising=False)
+    monkeypatch.delenv("AGENT_COMMAND", raising=False)
     with pytest.raises(RuntimeError) as exc:
         load_settings(env_file="/nonexistent/.env")
-    assert "AGENT_PRICE" in str(exc.value)
+    assert "AGENT_COMMAND" in str(exc.value)
+
+
+def test_load_settings_no_price_at_all_raises(clean_env, monkeypatch):
+    _apply_required(monkeypatch)
+    monkeypatch.delenv("AGENT_PRICE", raising=False)
+    monkeypatch.delenv("AGENT_PRICE_USD", raising=False)
+    with pytest.raises(RuntimeError, match="AGENT_PRICE.*AGENT_PRICE_USD"):
+        load_settings(env_file="/nonexistent/.env")
+
+
+def test_load_settings_usdt_only(clean_env, monkeypatch):
+    _apply_required(monkeypatch)
+    monkeypatch.delenv("AGENT_PRICE", raising=False)
+    monkeypatch.setenv("AGENT_PRICE_USD", "1000000")
+    s = load_settings(env_file="/nonexistent/.env")
+    assert s.agent_price == 0
+    assert s.agent_price_usdt == 1_000_000
+
+
+def test_load_settings_both_prices(clean_env, monkeypatch):
+    _apply_required(monkeypatch)
+    monkeypatch.setenv("AGENT_PRICE_USD", "500000")
+    s = load_settings(env_file="/nonexistent/.env")
+    assert s.agent_price == 10_000_000
+    assert s.agent_price_usdt == 500_000
 
 
 def test_load_settings_defaults(clean_env, monkeypatch):

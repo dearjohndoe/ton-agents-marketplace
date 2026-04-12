@@ -56,6 +56,7 @@ def _make_settings(tmp_path: Path, **overrides) -> Settings:
         tx_db_path=str(tmp_path / "tx.db"),
         enforce_comment_nonce=True,
         refund_fee_nanoton=500_000,
+        agent_price_usdt=None,
         has_quote=False,
         rate_limit_requests=3,
         rate_limit_window=1,  # short window so eviction test runs fast
