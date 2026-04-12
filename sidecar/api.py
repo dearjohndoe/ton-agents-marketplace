@@ -216,6 +216,7 @@ class SidecarApp:
         while not self.stop_event.is_set():
             await self.jobs.cleanup()
             self._cleanup_expired_files()
+            self._cleanup_rate_limits()
             try:
                 await asyncio.wait_for(self.stop_event.wait(), timeout=60)
             except asyncio.TimeoutError:
@@ -232,8 +233,13 @@ class SidecarApp:
 
     def _process_file_result(self, result: dict[str, Any]) -> dict[str, Any]:
         """If result is type=file with base64 data, store to disk and replace with download URL."""
-        if result.get("type") != "file" or "data" not in result:
+        if result.get("type") != "file":
             return result
+        if "data" not in result:
+            # Agent declared type=file but sent no payload — surface the
+            # contract violation instead of silently forwarding a broken
+            # result to the caller.
+            raise ValueError("File result is missing required 'data' field")
 
         raw_data = result["data"]
         if not isinstance(raw_data, str) or not raw_data:
@@ -295,6 +301,37 @@ class SidecarApp:
         expired = [fid for fid, entry in self._file_store.items() if entry["expires_at"] <= now]
         for fid in expired:
             self._cleanup_file(fid)
+
+    def _cleanup_uploaded_files(self, uploaded_files: dict[str, Path]) -> None:
+        """Remove upload directories created by _parse_multipart_invoke.
+
+        Called on every handle_invoke error path that runs before the agent
+        subprocess takes ownership of the files — without this, multipart
+        uploads that hit a validation/verification error would accumulate on
+        disk forever.
+        """
+        for file_path in uploaded_files.values():
+            try:
+                shutil.rmtree(file_path.parent, ignore_errors=True)
+            except Exception:
+                logger.warning("Failed to cleanup uploaded file dir %s", file_path.parent)
+
+    def _cleanup_rate_limits(self) -> None:
+        """Drop rate-limit entries whose every timestamp is stale.
+
+        Without this sweep, self.rate_limits grows unboundedly as new IPs
+        connect — the middleware only filters a key's history when that same
+        IP makes another request, so rotating source IPs is a slow-drip
+        memory leak. Called from cleanup_loop on a timer.
+        """
+        cutoff = time.time() - self.settings.rate_limit_window
+        stale = [
+            ip
+            for ip, history in self.rate_limits.items()
+            if not history or all(ts <= cutoff for ts in history)
+        ]
+        for ip in stale:
+            self.rate_limits.pop(ip, None)
 
     @staticmethod
     def _validate_result_structure(raw: dict[str, Any]) -> None:
@@ -469,124 +506,137 @@ class SidecarApp:
         from aiohttp import web
 
         uploaded_files: dict[str, Path] = {}
+        # Flip to True once the runner takes ownership of uploaded_files —
+        # until then, any early return must clean them up so validation /
+        # verification failures don't leak multipart uploads on disk.
+        ownership_transferred = False
 
         try:
-            if request.content_type and "multipart/form-data" in request.content_type:
-                tx_hash, nonce, capability, quote_id, body, uploaded_files = \
-                    await self._parse_multipart_invoke(request)
-                payload = {"body": body}
-            else:
-                data = await request.json()
-                tx_hash = str(data.get("tx", "")).strip()
-                nonce = str(data.get("nonce", "")).strip()
-                capability = str(data.get("capability", "")).strip()
-                quote_id = str(data.get("quote_id", "")).strip() or None
-                body = data.get("body", {})
-                payload = data
-        except Exception:
-            return web.json_response({"error": "Invalid request"}, status=400)
+            try:
+                if request.content_type and "multipart/form-data" in request.content_type:
+                    tx_hash, nonce, capability, quote_id, body, uploaded_files = \
+                        await self._parse_multipart_invoke(request)
+                    payload = {"body": body}
+                else:
+                    data = await request.json()
+                    tx_hash = str(data.get("tx", "")).strip()
+                    nonce = str(data.get("nonce", "")).strip()
+                    capability = str(data.get("capability", "")).strip()
+                    quote_id = str(data.get("quote_id", "")).strip() or None
+                    body = data.get("body", {})
+                    payload = data
+            except Exception:
+                return web.json_response({"error": "Invalid request"}, status=400)
 
-        if not capability:
-            return web.json_response({"error": "capability is required"}, status=400)
+            if not capability:
+                return web.json_response({"error": "capability is required"}, status=400)
 
-        if capability != self.settings.capability:
-            return web.json_response({"error": "Unsupported capability"}, status=400)
+            if capability != self.settings.capability:
+                return web.json_response({"error": "Unsupported capability"}, status=400)
 
-        # Determine minimum payment amount (quoted or static)
-        min_amount = self.settings.agent_price
-        if quote_id:
-            self._cleanup_expired_quotes()
-            quote_entry = self.quotes.get(quote_id)
-            if quote_entry is None:
-                return web.json_response({"error": "Quote not found or expired"}, status=400)
-            if quote_entry.locked and tx_hash:
-                return web.json_response({"error": "Quote is currently locked by another request"}, status=409)
-            min_amount = quote_entry.price
+            # Determine minimum payment amount (quoted or static)
+            min_amount = self.settings.agent_price
+            quote_entry = None
+            if quote_id:
+                self._cleanup_expired_quotes()
+                quote_entry = self.quotes.get(quote_id)
+                if quote_entry is None:
+                    return web.json_response({"error": "Quote not found or expired"}, status=400)
+                if quote_entry.locked and tx_hash:
+                    return web.json_response({"error": "Quote is currently locked by another request"}, status=409)
+                min_amount = quote_entry.price
 
-        # HTTP 402 Payment Required flow — return price before validating body,
-        # so preflight pings always get 402 with real price (not 400 for missing fields)
-        if not tx_hash:
-            if not nonce or not nonce.endswith(f":{self.sidecar_id}"):
-                nonce = f"{uuid.uuid4().hex[:16]}:{self.sidecar_id}"
+            # HTTP 402 Payment Required flow — return price before validating body,
+            # so preflight pings always get 402 with real price (not 400 for missing fields)
+            if not tx_hash:
+                if not nonce or not nonce.endswith(f":{self.sidecar_id}"):
+                    nonce = f"{uuid.uuid4().hex[:16]}:{self.sidecar_id}"
 
-            return web.json_response({
-                "error": "Payment required",
-                "payment_request": {
-                    "address": self.settings.agent_wallet,
-                    "amount": str(min_amount),
-                    "memo": nonce
-                }
-            }, status=402, headers={
-                "x-ton-pay-address": self.settings.agent_wallet,
-                "x-ton-pay-amount": str(min_amount),
-                "x-ton-pay-nonce": nonce
-            })
+                return web.json_response({
+                    "error": "Payment required",
+                    "payment_request": {
+                        "address": self.settings.agent_wallet,
+                        "amount": str(min_amount),
+                        "memo": nonce
+                    }
+                }, status=402, headers={
+                    "x-ton-pay-address": self.settings.agent_wallet,
+                    "x-ton-pay-amount": str(min_amount),
+                    "x-ton-pay-nonce": nonce
+                })
 
-        # Validate body only on execution (with tx) — preflight already returned above
-        missing = validate_body(payload, self.args_schema, has_tx=True, uploaded_files=uploaded_files)
-        if missing:
-            return web.json_response({"error": "Missing required fields", "missing": missing}, status=400)
+            # Validate body only on execution (with tx) — preflight already returned above
+            missing = validate_body(payload, self.args_schema, has_tx=True, uploaded_files=uploaded_files)
+            if missing:
+                return web.json_response({"error": "Missing required fields", "missing": missing}, status=400)
 
-        if not nonce:
-            return web.json_response({"error": "nonce is required with tx"}, status=400)
+            if not nonce:
+                return web.json_response({"error": "nonce is required with tx"}, status=400)
 
-        if quote_id and quote_entry:
-            quote_entry.locked = True
+            if quote_id and quote_entry:
+                quote_entry.locked = True
 
-        nonce_meta = parse_nonce(nonce)
-        if not nonce_meta.value.endswith(f":{self.sidecar_id}"):
+            nonce_meta = parse_nonce(nonce)
+            if not nonce_meta.value.endswith(f":{self.sidecar_id}"):
+                if quote_id and quote_id in self.quotes:
+                    self.quotes[quote_id].locked = False
+                return web.json_response({"error": "Nonce sidecar_id mismatch"}, status=402)
+
+            if await self.tx_store.is_processed(tx_hash):
+                if quote_id and quote_id in self.quotes:
+                    self.quotes[quote_id].locked = False
+                return web.json_response({"error": "Transaction already used"}, status=409)
+
+            try:
+                verified_payment = await self.verifier.verify(tx_hash=tx_hash, raw_nonce=nonce, min_amount=min_amount)
+            except PaymentVerificationError as exc:
+                if quote_id and quote_id in self.quotes:
+                    self.quotes[quote_id].locked = False
+                return web.json_response({"error": str(exc)}, status=402)
+            except Exception:
+                logger.exception("Payment verification error")
+                if quote_id and quote_id in self.quotes:
+                    self.quotes[quote_id].locked = False
+                return web.json_response({"error": "Payment verification failed"}, status=502)
+
+            # Dedup against the real on-chain hash (verify() now returns it, not the user-supplied one)
+            if await self.tx_store.is_processed(verified_payment.tx_hash):
+                if quote_id and quote_id in self.quotes:
+                    self.quotes[quote_id].locked = False
+                return web.json_response({"error": "Transaction already used"}, status=409)
+
+            try:
+                await self.tx_store.mark_processed(verified_payment.tx_hash)
+            except Exception:
+                if quote_id and quote_id in self.quotes:
+                    self.quotes[quote_id].locked = False
+                return web.json_response({"error": "Failed to persist transaction"}, status=500)
+
+            # Consume quote so it can't be reused
             if quote_id and quote_id in self.quotes:
-                self.quotes[quote_id].locked = False
-            return web.json_response({"error": "Nonce sidecar_id mismatch"}, status=402)
+                del self.quotes[quote_id]
 
-        if await self.tx_store.is_processed(tx_hash):
-            if quote_id and quote_id in self.quotes:
-                self.quotes[quote_id].locked = False
-            return web.json_response({"error": "Transaction already used"}, status=409)
+            agent_body = dict(body)
+            for field_name, file_path in uploaded_files.items():
+                agent_body[f"{field_name}_path"] = str(file_path)
+                if f"{field_name}_name" not in agent_body:
+                    agent_body[f"{field_name}_name"] = file_path.name
 
-        try:
-            verified_payment = await self.verifier.verify(tx_hash=tx_hash, raw_nonce=nonce, min_amount=min_amount)
-        except PaymentVerificationError as exc:
-            if quote_id and quote_id in self.quotes:
-                self.quotes[quote_id].locked = False
-            return web.json_response({"error": str(exc)}, status=402)
-        except Exception:
-            logger.exception("Payment verification error")
-            if quote_id and quote_id in self.quotes:
-                self.quotes[quote_id].locked = False
-            return web.json_response({"error": "Payment verification failed"}, status=502)
+            agent_payload = {
+                "capability": capability,
+                "body": agent_body,
+            }
 
-        # Dedup against the real on-chain hash (verify() now returns it, not the user-supplied one)
-        if await self.tx_store.is_processed(verified_payment.tx_hash):
-            if quote_id and quote_id in self.quotes:
-                self.quotes[quote_id].locked = False
-            return web.json_response({"error": "Transaction already used"}, status=409)
-
-        try:
-            await self.tx_store.mark_processed(verified_payment.tx_hash)
-        except Exception:
-            if quote_id and quote_id in self.quotes:
-                self.quotes[quote_id].locked = False
-            return web.json_response({"error": "Failed to persist transaction"}, status=500)
-
-        # Consume quote so it can't be reused
-        if quote_id and quote_id in self.quotes:
-            del self.quotes[quote_id]
-
-        agent_body = dict(body)
-        for field_name, file_path in uploaded_files.items():
-            agent_body[f"{field_name}_path"] = str(file_path)
-            if f"{field_name}_name" not in agent_body:
-                agent_body[f"{field_name}_name"] = file_path.name
-
-        agent_payload = {
-            "capability": capability,
-            "body": agent_body,
-        }
-
-        job_id = await self.jobs.submit(
-            self._create_runner(agent_payload, verified_payment.sender, verified_payment.amount, tx_hash, uploaded_files)
-        )
+            # From here on, the runner owns uploaded_files: its finally block
+            # will rmtree them after the subprocess finishes (successfully or
+            # not). Stop the outer finally from double-deleting.
+            ownership_transferred = True
+            job_id = await self.jobs.submit(
+                self._create_runner(agent_payload, verified_payment.sender, verified_payment.amount, tx_hash, uploaded_files)
+            )
+        finally:
+            if not ownership_transferred and uploaded_files:
+                self._cleanup_uploaded_files(uploaded_files)
 
         record = await self.jobs.wait_for_completion(job_id, timeout_seconds=self.settings.sync_timeout)
 

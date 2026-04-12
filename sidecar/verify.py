@@ -40,6 +40,9 @@ class ProcessedTxStore:
     def __init__(self, db_path: str) -> None:
         self._path = Path(db_path)
         self._conn: aiosqlite.Connection | None = None
+        # Track fire-and-forget cleanup tasks so close() can drain them
+        # instead of leaving pending tasks with a dangling connection ref.
+        self._background_tasks: set[asyncio.Task[Any]] = set()
 
     async def init(self) -> None:
         self._conn = await aiosqlite.connect(self._path)
@@ -74,10 +77,15 @@ class ProcessedTxStore:
         await self._conn.commit()
 
         # Run in background. Store history for 30 days.
-        # TODO: Move to worker
-        asyncio.create_task(self.cleanup(older_than_seconds=30 * 24 * 3600))
+        task = asyncio.create_task(self.cleanup(older_than_seconds=30 * 24 * 3600))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     async def close(self) -> None:
+        # Drain any pending cleanup tasks first so they don't touch the
+        # connection after we close it.
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
         if self._conn:
             await self._conn.close()
     
