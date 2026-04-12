@@ -86,12 +86,16 @@ class HeartbeatManager:
         return True
 
     async def loop(self, stop_event: asyncio.Event) -> None:
+        # Wake at least once per hour so we can react quickly to shutdown,
+        # but honor self._interval when it's shorter than that (tests and
+        # aggressive intervals would otherwise be ignored entirely).
+        poll_timeout = min(self._interval.total_seconds(), 3600)
         while not stop_event.is_set():
             try:
                 await self.send_if_needed(force=False)
             except Exception:
                 logger.exception("Heartbeat failed")
             try:
-                await asyncio.wait_for(stop_event.wait(), timeout=3600)
+                await asyncio.wait_for(stop_event.wait(), timeout=poll_timeout)
             except asyncio.TimeoutError:
                 continue

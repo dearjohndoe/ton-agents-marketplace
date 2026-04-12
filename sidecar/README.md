@@ -137,6 +137,24 @@ sudo .venv/bin/python sidecar/sidecar.py service uninstall --name my-agent
 
 ---
 
+## Tests
+
+```bash
+# Install test dependencies
+.venv/bin/pip install pytest pytest-asyncio pytest-cov
+
+# Run tests (from sidecar/ directory)
+cd sidecar
+../.venv/bin/python -m pytest tests -v
+
+# Run with coverage report
+../.venv/bin/python -m pytest tests --cov=. --cov-report=term-missing
+```
+
+Tests also run automatically on every PR and push to master via GitHub Actions.
+
+---
+
 ## HTTP API
 
 | Method | Path | Description |

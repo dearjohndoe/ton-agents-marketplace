@@ -113,6 +113,12 @@ class TransferSender:
                     return tx_hash
                 except Exception as exc:
                     last_exc = exc
+                    if attempt >= SEND_MAX_RETRIES - 1:
+                        logger.warning(
+                            "Transfer attempt %d/%d failed (dest=%s amount=%d): %s",
+                            attempt + 1, SEND_MAX_RETRIES, destination, amount, exc,
+                        )
+                        break
                     delay = SEND_RETRY_DELAYS[min(attempt, len(SEND_RETRY_DELAYS) - 1)]
                     logger.warning(
                         "Transfer attempt %d/%d failed (dest=%s amount=%d): %s. Retrying in %ds",

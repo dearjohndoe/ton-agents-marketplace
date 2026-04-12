@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type AnchorHTMLAttributes } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { TypedResult } from '../types'
@@ -76,10 +76,20 @@ function OrchestratorResult({
   )
 }
 
+function MarkdownLink({ href, children, ...props }: AnchorHTMLAttributes<HTMLAnchorElement>) {
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
+      {children}
+    </a>
+  )
+}
+
 function StringResult({ data }: { data: string }) {
   return (
     <div className="result-markdown">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{data}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink }}>
+        {data}
+      </ReactMarkdown>
     </div>
   )
 }

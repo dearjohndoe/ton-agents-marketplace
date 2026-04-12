@@ -1,0 +1,16 @@
+[run]
+branch = False
+source = .
+omit =
+    tests/*
+    sidecar.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+show_missing = True
+skip_covered = False
+precision = 1

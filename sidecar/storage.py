@@ -16,15 +16,38 @@ class StateStore:
         self._path = Path(path)
 
     def load(self) -> SidecarState:
+        # File not existing is a legitimate first-run state — return defaults.
         if not self._path.exists():
             return SidecarState()
+        # Any other failure mode (unreadable, corrupt, wrong shape) is fatal:
+        # losing sidecar_id silently would re-register the agent under a fresh
+        # identity on the registry, stranding in-flight payments. Crash loudly
+        # so the operator notices and restores the state file from backup.
+        raw = self._path.read_text(encoding="utf-8")
         try:
-            payload = json.loads(self._path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return SidecarState()
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"State file {self._path} is corrupt (invalid JSON): {exc}. "
+                "Refusing to start with a blank identity — restore the file "
+                "from backup or delete it to re-register as a new agent."
+            ) from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError(
+                f"State file {self._path} is malformed: expected a JSON object, "
+                f"got {type(payload).__name__}. Refusing to start with a blank "
+                "identity — restore the file from backup or delete it to "
+                "re-register as a new agent."
+            )
+        missing = {"last_heartbeat", "sidecar_id"} - payload.keys()
+        if missing:
+            raise RuntimeError(
+                f"State file {self._path} is missing required keys: "
+                f"{sorted(missing)}. Refusing to start with a partial identity."
+            )
         return SidecarState(
-            last_heartbeat=payload.get("last_heartbeat"),
-            sidecar_id=payload.get("sidecar_id"),
+            last_heartbeat=payload["last_heartbeat"],
+            sidecar_id=payload["sidecar_id"],
         )
 
     def save(self, state: SidecarState) -> None:
