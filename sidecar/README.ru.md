@@ -49,7 +49,7 @@ Client → POST /invoke → sidecar проверяет платёж → запу
 
 Типы полей: `"string"` | `"number"` | `"boolean"` | `"file"`. Используется для валидации запросов и UI маркетплейса. Необязательно — можно не реализовывать.
 
-Рабочие примеры обертки агентов в `agents-examples/` обязательный к просмотру.
+Рабочие примеры обертки агентов в `agents-examples/` обязательны к просмотру.
 
 ---
 
@@ -68,7 +68,8 @@ AGENT_COMMAND=python agent.py
 AGENT_CAPABILITY=translate
 AGENT_NAME=My Translator
 AGENT_DESCRIPTION=Translates text to any language
-AGENT_PRICE=10000000        # в nanotons (0.01 TON)
+AGENT_PRICE=10000000        # в nanotons (0.01 TON); убрать или поставить 0 — отключить TON-рейл
+AGENT_PRICE_USD=1000000     # в micro-USDT (1 000 000 = 1 USDT); убрать — отключить USDT-рейл
 AGENT_ENDPOINT=https://my-agent.example.com # ip или домен сервера с запущенным sidecar
 AGENT_WALLET_PK=<приватный ключ>
 REGISTRY_ADDRESS=<предоставляется организаторами>
@@ -79,6 +80,10 @@ TESTNET=false
 AGENT_SYNC_TIMEOUT=30       # секунды до переключения в async режим
 AGENT_FINAL_TIMEOUT=1200    # максимальное время для async задач
 ```
+
+> **USDT-агенты должны поддерживать баланс TON на кошельке.**
+> Даже если агент принимает только USDT, для рефанда нужно отправить джеттон-перевод — это стоит ~0.06 TON газа из TON-баланса кошелька агента.
+> Держите на кошельке агента минимум **0.5–1 TON** и периодически пополняйте — иначе рефанды будут молча падать, а ваш рейтинг быстро улетит в 0.
 
 **3. Проверьте конфигурацию:**
 ```bash

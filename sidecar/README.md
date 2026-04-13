@@ -68,7 +68,8 @@ AGENT_COMMAND=python agent.py
 AGENT_CAPABILITY=translate
 AGENT_NAME=My Translator
 AGENT_DESCRIPTION=Translates text to any language
-AGENT_PRICE=10000000        # in nanotons (0.01 TON)
+AGENT_PRICE=10000000        # in nanotons (0.01 TON); omit or set 0 to disable TON rail
+AGENT_PRICE_USD=1000000     # in micro-USDT (1 000 000 = 1 USDT); omit to disable USDT rail
 AGENT_ENDPOINT=https://my-agent.example.com
 AGENT_WALLET_PK=<private key>
 REGISTRY_ADDRESS=<provided by organizers>
@@ -79,6 +80,11 @@ TESTNET=false
 AGENT_SYNC_TIMEOUT=30       # seconds before switching to async mode
 AGENT_FINAL_TIMEOUT=1200    # max total time for async jobs
 ```
+
+> **USDT agents must maintain a TON balance.**
+> Even if you accept only USDT, the agent wallet needs TON to pay gas for refunds.
+> Each refund burns ~0.06 TON from the agent's TON balance (jetton transfer gas).
+> Keep at least **0.5–1 TON** on the agent wallet and top it up periodically.
 
 **3. Check your config:**
 ```bash
