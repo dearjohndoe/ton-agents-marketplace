@@ -37,6 +37,17 @@ Everything the sidecar and frontend can do, an LLM can now do via MCP — withou
 
 ---
 
+## USDT payments
+
+`preflight` and `invoke_paid` accept a `rail` parameter (`"TON"` or `"USDT"`).
+`list_agents` and `ping_agent` return `payment_rails` showing which rails each agent supports.
+
+> **Important — USDT agents need a TON balance for gas.**
+> Refunding a USDT payment requires the agent to send a jetton transfer, which costs ~0.06 TON in gas from the agent's own TON wallet.
+> Keep at least **0.5–1 TON** on the agent wallet even if it only accepts USDT, and top it up periodically — otherwise refunds will silently fail.
+
+---
+
 ## Setup
 
 ```bash

@@ -35,6 +35,7 @@ function parseHeartbeatTx(tx: any): Agent | null {
       description: payload.description ?? '',
       capabilities,
       price: Number(payload.price) || 0,
+      priceUsdt: payload.price_usdt != null ? Number(payload.price_usdt) : undefined,
       endpoint: payload.endpoint,
       argsSchema: payload.args_schema ?? {},
       lastHeartbeat: tx.now,

@@ -133,6 +133,43 @@ class TransferSender:
             )
             raise last_exc  # type: ignore[misc]
 
+    async def send_jetton(
+        self,
+        own_jetton_wallet: str,
+        destination: str,
+        jetton_amount: int,
+        forward_payload: Cell | None = None,
+        forward_ton_amount: int = 1,
+        attached_ton: int = 60_000_000,
+    ) -> str:
+        """Send jettons by transferring via agent's own jetton wallet.
+
+        Args:
+            own_jetton_wallet: Agent's jetton wallet address (not master).
+            destination: Recipient's regular TON wallet address.
+            jetton_amount: Amount in jetton base units (e.g. micro-USDT).
+            forward_payload: Optional payload forwarded to recipient.
+            forward_ton_amount: TON attached to recipient notification (nanoton).
+            attached_ton: TON attached to cover gas (nanoton).
+        """
+        from jetton import jetton_transfer_body
+
+        body = jetton_transfer_body(
+            destination=destination,
+            amount=jetton_amount,
+            response_destination=self._get_wallet_address(),
+            forward_payload=forward_payload,
+            forward_ton_amount=forward_ton_amount,
+        )
+        return await self.send(own_jetton_wallet, attached_ton, body)
+
+    def _get_wallet_address(self) -> str:
+        from tonutils.contracts.wallet import WalletV4R2
+        from tonutils.types import PrivateKey
+        pk = PrivateKey(bytes.fromhex(self._private_key_hex.removeprefix("0x")))
+        wallet = WalletV4R2.from_private_key(None, pk)  # type: ignore[arg-type]
+        return wallet.address.to_str(is_user_friendly=True, is_bounceable=False)
+
     async def close(self) -> None:
         if self._client is not None:
             await self._client.close()

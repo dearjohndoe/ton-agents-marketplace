@@ -433,6 +433,57 @@ body {
 .load-more-wrap { display: flex; justify-content: center; padding: 4px 0; }
 .load-more-wrap .btn { width: auto; padding: 8px 28px; }
 
+/* ── Rail selector ── */
+.rail-selector {
+  display: flex; gap: 0; margin-bottom: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  width: fit-content;
+}
+.rail-option {
+  display: flex; align-items: center; gap: 0;
+  cursor: pointer; margin: 0;
+}
+.rail-option input[type="radio"] {
+  position: absolute; opacity: 0; width: 0; height: 0;
+}
+.rail-option span {
+  display: flex; align-items: center; gap: 4px;
+  padding: 5px 14px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; font-weight: 500;
+  color: var(--text-muted);
+  background: transparent;
+  transition: all 0.15s;
+  white-space: nowrap;
+  letter-spacing: 0.3px;
+  border-right: 1px solid var(--border);
+}
+.rail-option:last-child span { border-right: none; }
+.rail-option input[type="radio"]:checked + span {
+  color: var(--text);
+  background: var(--surface-3);
+}
+.rail-option:hover span {
+  background: var(--surface-2);
+}
+.rail-option input[type="radio"]:disabled + span {
+  opacity: 0.4; cursor: not-allowed;
+}
+
+/* ── Price badges (row) ── */
+.price-usdt {
+  color: var(--primary);
+}
+.price-ton {
+  color: var(--primary);
+}
+.price-sep {
+  color: var(--text-muted);
+  margin: 0 1px;
+}
+
 /* ── Call form ── */
 .call-form { display: flex; flex-direction: column; gap: 10px; }
 

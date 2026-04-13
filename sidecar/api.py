@@ -17,7 +17,8 @@ from heartbeat import HeartbeatConfig, HeartbeatManager
 from jobs import JobStore, run_agent_subprocess
 from storage import StateStore
 from transfer import TransferSender, refund_body
-from verify import PaymentVerificationError, PaymentVerifier, ProcessedTxStore, parse_nonce
+from verify import PaymentVerificationError, PaymentVerifier, JettonPaymentVerifier, ProcessedTxStore, parse_nonce
+from jetton import USDT_MASTER_MAINNET, USDT_MASTER_TESTNET, USDT_REFUND_FEE
 from settings import Settings
 
 logger = logging.getLogger("sidecar")
@@ -104,6 +105,17 @@ class SidecarApp:
             private_key_hex=settings.agent_wallet_pk,
             testnet=settings.testnet,
         )
+        self.jetton_verifier: JettonPaymentVerifier | None = None
+        self._agent_jetton_wallet: str | None = None
+        if settings.agent_price_usdt:
+            usdt_master = USDT_MASTER_TESTNET if settings.testnet else USDT_MASTER_MAINNET
+            self.jetton_verifier = JettonPaymentVerifier(
+                agent_wallet=settings.agent_wallet,
+                usdt_master=usdt_master,
+                min_amount=settings.agent_price_usdt,
+                payment_timeout_seconds=settings.payment_timeout,
+                testnet=settings.testnet,
+            )
         self.stop_event = asyncio.Event()
         self.sidecar_id: str = ""
         self.heartbeat = HeartbeatManager(
@@ -116,6 +128,7 @@ class SidecarApp:
                 description=settings.agent_description,
                 args_schema={},
                 has_quote=settings.has_quote,
+                price_usdt=settings.agent_price_usdt,
                 result_schema=None,
             ),
             state_store=self.state_store,
@@ -126,7 +139,29 @@ class SidecarApp:
         # Rate Limiting state: ip -> list of timestamps
         self.rate_limits: dict[str, list[float]] = {}
 
-    async def refund_user(self, recipient: str, payment_amount: int, original_tx_hash: str, reason: str) -> None:
+    async def refund_user(
+        self, recipient: str, payment_amount: int, original_tx_hash: str, reason: str, rail: str = "TON",
+    ) -> None:
+        if rail == "USDT":
+            refund_amount = max(payment_amount - USDT_REFUND_FEE, 0)
+            if refund_amount <= 0:
+                logger.warning(
+                    "USDT refund skipped: amount too small after fee",
+                    extra={"tx_hash": original_tx_hash, "payment_amount": payment_amount},
+                )
+                return
+            try:
+                fwd = refund_body(original_tx_hash, reason, self.sidecar_id)
+                await self.sender.send_jetton(
+                    own_jetton_wallet=self._agent_jetton_wallet or "",
+                    destination=recipient,
+                    jetton_amount=refund_amount,
+                    forward_payload=fwd,
+                )
+            except Exception:
+                logger.exception("Failed to send USDT refund")
+            return
+
         refund_amount = max(payment_amount - self.settings.refund_fee_nanoton, 0)
         if refund_amount <= 0:
             logger.warning(
@@ -173,6 +208,7 @@ class SidecarApp:
                 description=self.settings.agent_description,
                 args_schema=self.args_schema,
                 has_quote=self.settings.has_quote,
+                price_usdt=self.settings.agent_price_usdt,
                 sidecar_id=self.sidecar_id,
                 result_schema=self.result_schema,
             ),
@@ -193,6 +229,13 @@ class SidecarApp:
         except Exception:
             logger.exception("PaymentVerifier failed to start")
 
+        if self.jetton_verifier:
+            try:
+                await self.jetton_verifier.start()
+                self._agent_jetton_wallet = self.jetton_verifier.jetton_wallet_address
+            except Exception:
+                logger.exception("JettonPaymentVerifier failed to start")
+
         try:
             await self.heartbeat.send_if_needed(force=False)
         except Exception:
@@ -210,6 +253,8 @@ class SidecarApp:
         await asyncio.gather(*self.background_tasks, return_exceptions=True)
         await self.sender.close()
         await self.verifier.close()
+        if self.jetton_verifier:
+            await self.jetton_verifier.close()
         await self.tx_store.close()
 
     async def cleanup_loop(self) -> None:
@@ -349,6 +394,7 @@ class SidecarApp:
         amount: int,
         tx_hash: str,
         uploaded_files: dict[str, Path] | None = None,
+        rail: str = "TON",
     ):
         async def runner() -> dict[str, Any]:
             try:
@@ -360,6 +406,7 @@ class SidecarApp:
                         "OWN_SIDECAR_ID": self.sidecar_id,
                         "CALLER_ADDRESS": sender,
                         "CALLER_TX_HASH": tx_hash,
+                        "PAYMENT_RAIL": rail,
                     },
                 )
                 self._validate_result_structure(raw)
@@ -380,6 +427,7 @@ class SidecarApp:
                         payment_amount=amount,
                         original_tx_hash=tx_hash,
                         reason=short_reason,
+                        rail=rail,
                     )
                 except Exception:
                     logger.exception("Refund sub-task failed inside runner")
@@ -395,14 +443,15 @@ class SidecarApp:
 
     async def _parse_multipart_invoke(
         self, request: web.Request
-    ) -> tuple[str, str, str, str | None, dict[str, Any], dict[str, Path]]:
+    ) -> tuple[str, str, str, str | None, str, dict[str, Any], dict[str, Path]]:
         """Parse multipart/form-data invoke request.
 
-        Returns: (tx_hash, nonce, capability, quote_id, body_dict, uploaded_files)
+        Returns: (tx_hash, nonce, capability, quote_id, rail, body_dict, uploaded_files)
         """
         reader = await request.multipart()
         tx_hash = nonce = capability = ""
         quote_id: str | None = None
+        rail = "TON"
         body: dict[str, Any] = {}
         uploaded_files: dict[str, Path] = {}
 
@@ -416,6 +465,8 @@ class SidecarApp:
                 capability = (await part.text()).strip()
             elif name == "quote_id":
                 quote_id = (await part.text()).strip() or None
+            elif name == "rail":
+                rail = (await part.text()).strip().upper() or "TON"
             elif name == "body_json":
                 body = json.loads(await part.text())
             elif name and name.startswith("file:"):
@@ -428,7 +479,7 @@ class SidecarApp:
                 file_path.write_bytes(file_data)
                 uploaded_files[field_name] = file_path
 
-        return tx_hash, nonce, capability, quote_id, body, uploaded_files
+        return tx_hash, nonce, capability, quote_id, rail, body, uploaded_files
 
     def _cleanup_expired_quotes(self) -> None:
         now = time.time()
@@ -442,7 +493,7 @@ class SidecarApp:
 
         try:
             if request.content_type and "multipart/form-data" in request.content_type:
-                _, _, capability, _, body, _ = await self._parse_multipart_invoke(request)
+                _, _, capability, _, _, body, _ = await self._parse_multipart_invoke(request)
             else:
                 data = await request.json()
                 capability = str(data.get("capability", "")).strip()
@@ -514,7 +565,7 @@ class SidecarApp:
         try:
             try:
                 if request.content_type and "multipart/form-data" in request.content_type:
-                    tx_hash, nonce, capability, quote_id, body, uploaded_files = \
+                    tx_hash, nonce, capability, quote_id, rail, body, uploaded_files = \
                         await self._parse_multipart_invoke(request)
                     payload = {"body": body}
                 else:
@@ -523,6 +574,7 @@ class SidecarApp:
                     nonce = str(data.get("nonce", "")).strip()
                     capability = str(data.get("capability", "")).strip()
                     quote_id = str(data.get("quote_id", "")).strip() or None
+                    rail = str(data.get("rail", "")).strip().upper() or "TON"
                     body = data.get("body", {})
                     payload = data
             except Exception:
@@ -546,24 +598,52 @@ class SidecarApp:
                     return web.json_response({"error": "Quote is currently locked by another request"}, status=409)
                 min_amount = quote_entry.price
 
+            # Determine USDT price (quoted or static)
+            min_amount_usdt = self.settings.agent_price_usdt or 0
+            if quote_entry and hasattr(quote_entry, "price_usdt") and quote_entry.price_usdt:
+                min_amount_usdt = quote_entry.price_usdt
+
             # HTTP 402 Payment Required flow — return price before validating body,
             # so preflight pings always get 402 with real price (not 400 for missing fields)
             if not tx_hash:
                 if not nonce or not nonce.endswith(f":{self.sidecar_id}"):
                     nonce = f"{uuid.uuid4().hex[:16]}:{self.sidecar_id}"
 
-                return web.json_response({
-                    "error": "Payment required",
-                    "payment_request": {
+                payment_options: list[dict[str, Any]] = []
+                if self.settings.agent_price:
+                    payment_options.append({
+                        "rail": "TON",
                         "address": self.settings.agent_wallet,
                         "amount": str(min_amount),
-                        "memo": nonce
-                    }
-                }, status=402, headers={
-                    "x-ton-pay-address": self.settings.agent_wallet,
-                    "x-ton-pay-amount": str(min_amount),
-                    "x-ton-pay-nonce": nonce
-                })
+                        "memo": nonce,
+                    })
+                if self.settings.agent_price_usdt and min_amount_usdt:
+                    usdt_master = USDT_MASTER_TESTNET if self.settings.testnet else USDT_MASTER_MAINNET
+                    payment_options.append({
+                        "rail": "USDT",
+                        "address": self.settings.agent_wallet,
+                        "amount": str(min_amount_usdt),
+                        "memo": nonce,
+                        "token": {
+                            "symbol": "USDT",
+                            "master": usdt_master,
+                            "decimals": 6,
+                        },
+                    })
+
+                resp_body: dict[str, Any] = {
+                    "error": "Payment required",
+                    "payment_request": payment_options[0] if payment_options else {},
+                    "payment_options": payment_options,
+                }
+
+                headers: dict[str, str] = {}
+                if self.settings.agent_price:
+                    headers["x-ton-pay-address"] = self.settings.agent_wallet
+                    headers["x-ton-pay-amount"] = str(min_amount)
+                    headers["x-ton-pay-nonce"] = nonce
+
+                return web.json_response(resp_body, status=402, headers=headers)
 
             # Validate body only on execution (with tx) — preflight already returned above
             missing = validate_body(payload, self.args_schema, has_tx=True, uploaded_files=uploaded_files)
@@ -588,7 +668,18 @@ class SidecarApp:
                 return web.json_response({"error": "Transaction already used"}, status=409)
 
             try:
-                verified_payment = await self.verifier.verify(tx_hash=tx_hash, raw_nonce=nonce, min_amount=min_amount)
+                if rail == "USDT":
+                    if not self.jetton_verifier:
+                        if quote_id and quote_id in self.quotes:
+                            self.quotes[quote_id].locked = False
+                        return web.json_response({"error": "USDT payments not configured"}, status=400)
+                    verified_payment = await self.jetton_verifier.verify(
+                        tx_hash=tx_hash, raw_nonce=nonce, min_amount=min_amount_usdt,
+                    )
+                else:
+                    verified_payment = await self.verifier.verify(
+                        tx_hash=tx_hash, raw_nonce=nonce, min_amount=min_amount,
+                    )
             except PaymentVerificationError as exc:
                 if quote_id and quote_id in self.quotes:
                     self.quotes[quote_id].locked = False
@@ -632,7 +723,7 @@ class SidecarApp:
             # not). Stop the outer finally from double-deleting.
             ownership_transferred = True
             job_id = await self.jobs.submit(
-                self._create_runner(agent_payload, verified_payment.sender, verified_payment.amount, tx_hash, uploaded_files)
+                self._create_runner(agent_payload, verified_payment.sender, verified_payment.amount, tx_hash, uploaded_files, rail)
             )
         finally:
             if not ownership_transferred and uploaded_files:
@@ -700,7 +791,13 @@ class SidecarApp:
     async def handle_info(self, _: web.Request) -> web.Response:
         from aiohttp import web
 
-        return web.json_response({
+        rails: list[str] = []
+        if self.settings.agent_price:
+            rails.append("TON")
+        if self.settings.agent_price_usdt:
+            rails.append("USDT")
+
+        info: dict[str, Any] = {
             "name": self.settings.agent_name,
             "description": self.settings.agent_description,
             "capabilities": [self.settings.capability],
@@ -708,7 +805,11 @@ class SidecarApp:
             "args_schema": self.args_schema,
             "result_schema": self.result_schema,
             "sidecar_id": self.sidecar_id,
-        })
+            "payment_rails": rails,
+        }
+        if self.settings.agent_price_usdt:
+            info["price_usdt"] = self.settings.agent_price_usdt
+        return web.json_response(info)
 
     def build_web_app(self) -> web.Application:
         from aiohttp import web

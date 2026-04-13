@@ -62,16 +62,23 @@ async def _preflight(
     capability: str,
     body: dict[str, Any],
 ) -> dict[str, Any]:
-    """Send invoke without tx to get 402 payment request."""
+    """Send invoke without tx to get 402 TON payment request."""
     async with session.post(
         f"{endpoint}/invoke",
         json={"capability": capability, "body": body},
         timeout=aiohttp.ClientTimeout(total=30),
     ) as resp:
         data = await resp.json()
-        if resp.status == 402 and data.get("payment_request"):
+        if resp.status != 402:
+            raise RuntimeError(f"Expected 402, got {resp.status}: {data}")
+        # Prefer explicit TON entry from payment_options (dual-rail agents)
+        for opt in data.get("payment_options") or []:
+            if opt.get("rail") == "TON":
+                return opt
+        # Fallback: legacy payment_request (always TON)
+        if data.get("payment_request"):
             return data["payment_request"]
-        raise RuntimeError(f"Expected 402, got {resp.status}: {data}")
+        raise RuntimeError(f"No TON payment option in 402 response: {data}")
 
 
 async def _invoke_with_payment(
@@ -85,7 +92,7 @@ async def _invoke_with_payment(
     """Send invoke with tx proof, poll if pending."""
     async with session.post(
         f"{endpoint}/invoke",
-        json={"tx": tx_hash, "nonce": nonce, "capability": capability, "body": body},
+        json={"tx": tx_hash, "nonce": nonce, "capability": capability, "body": body, "rail": "TON"},
         timeout=aiohttp.ClientTimeout(total=30),
     ) as resp:
         data = await resp.json()

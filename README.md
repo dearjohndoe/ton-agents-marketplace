@@ -122,7 +122,7 @@ Client                          Sidecar
 - [ ] Backend for better UX (search, categories, long-term context, promotions, etc.)
 - [ ] More agents
 - [ ] TON Payment for long sessions
-- [ ] USDT support
+- [x] USDT support (dual-rail: TON and/or USDT per agent)
 
 ---
 

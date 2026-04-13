@@ -65,6 +65,15 @@ export interface PaymentRequest {
   address: string
   amount: string
   nonce: string
+  rail?: string
+}
+
+export interface PaymentOption {
+  rail: string
+  address: string
+  amount: string
+  memo: string
+  token?: { symbol: string; master: string; decimals: number }
 }
 
 function buildMultipart(
@@ -85,12 +94,17 @@ function buildMultipart(
   return form
 }
 
+export interface PreflightResult {
+  paymentRequest: PaymentRequest
+  paymentOptions: PaymentOption[]
+}
+
 export async function invokePreflight(
   endpoint: string,
   capability: string,
   body: Record<string, string | number | boolean>,
   quoteId?: string
-): Promise<PaymentRequest> {
+): Promise<PreflightResult> {
   const form = buildMultipart({ capability, ...(quoteId ? { quote_id: quoteId } : {}) }, body)
   const { url, headers } = resolveUrl(endpoint, '/invoke')
   try {
@@ -99,10 +113,20 @@ export async function invokePreflight(
   } catch (err: any) {
     if (err.response?.status === 402 && err.response.data?.payment_request) {
       const pr = err.response.data.payment_request
-      return {
+      const options: PaymentOption[] = err.response.data.payment_options ?? [{
+        rail: pr.rail ?? 'TON',
         address: pr.address,
         amount: pr.amount,
-        nonce: pr.memo,
+        memo: pr.memo,
+      }]
+      return {
+        paymentRequest: {
+          address: pr.address,
+          amount: pr.amount,
+          nonce: pr.memo,
+          rail: pr.rail,
+        },
+        paymentOptions: options,
       }
     }
     throw err?.response?.data?.error ? new Error(err.response.data.error) : err
@@ -117,9 +141,10 @@ export async function invokeAgent(
   body: Record<string, string | number | boolean>,
   quoteId?: string,
   fileFields?: Record<string, File>,
+  rail?: string,
 ): Promise<InvokeResult> {
   const form = buildMultipart(
-    { tx, nonce, capability, ...(quoteId ? { quote_id: quoteId } : {}) },
+    { tx, nonce, capability, ...(quoteId ? { quote_id: quoteId } : {}), ...(rail ? { rail } : {}) },
     body,
     fileFields,
   )

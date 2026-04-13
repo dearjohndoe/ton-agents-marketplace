@@ -28,6 +28,7 @@ export interface Agent {
   description: string
   capabilities: string[]
   price: number         // nanotons
+  priceUsdt?: number    // micro-USDT (6 decimals)
   endpoint: string
   argsSchema: Record<string, ArgSchema>
   lastHeartbeat: number // unix timestamp
