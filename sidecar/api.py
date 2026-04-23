@@ -91,6 +91,7 @@ class SidecarApp:
         self._file_store: dict[str, dict[str, Any]] = {}
         self._file_store_dir = Path(settings.file_store_dir)
         self._file_store_ttl = settings.file_store_ttl
+        self._images_dir = Path(settings.images_dir).resolve()
         self.jobs = JobStore(ttl_seconds=settings.jobs_ttl)
         self.tx_store = ProcessedTxStore(settings.tx_db_path)
         self.verifier = PaymentVerifier(
@@ -130,6 +131,9 @@ class SidecarApp:
                 has_quote=settings.has_quote,
                 price_usdt=settings.agent_price_usdt,
                 result_schema=None,
+                preview_url=settings.agent_preview_url,
+                avatar_url=settings.agent_avatar_url,
+                images=settings.agent_images,
             ),
             state_store=self.state_store,
             transfer_sender=self.sender.send,
@@ -197,6 +201,7 @@ class SidecarApp:
             logger.info("Agent result_schema loaded: %s", self.result_schema)
 
         self._file_store_dir.mkdir(parents=True, exist_ok=True)
+        self._images_dir.mkdir(parents=True, exist_ok=True)
 
         self.heartbeat = HeartbeatManager(
             config=HeartbeatConfig(
@@ -211,6 +216,9 @@ class SidecarApp:
                 price_usdt=self.settings.agent_price_usdt,
                 sidecar_id=self.sidecar_id,
                 result_schema=self.result_schema,
+                preview_url=self.settings.agent_preview_url,
+                avatar_url=self.settings.agent_avatar_url,
+                images=self.settings.agent_images,
             ),
             state_store=self.state_store,
             transfer_sender=self.sender.send,
@@ -275,6 +283,42 @@ class SidecarApp:
         "audio/ogg": ".ogg", "video/mp4": ".mp4", "video/webm": ".webm",
         "application/pdf": ".pdf",
     }
+
+    _IMAGE_EXT_MIME: dict[str, str] = {
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".gif": "image/gif", ".webp": "image/webp",
+    }
+
+    async def handle_image(self, request: web.Request) -> web.StreamResponse:
+        name = request.match_info.get("name", "")
+        # Defence in depth — aiohttp already strips path segments, but keep explicit check.
+        if not name or "/" in name or "\\" in name or name.startswith("."):
+            return web.Response(status=404)
+
+        ext = Path(name).suffix.lower()
+        mime = self._IMAGE_EXT_MIME.get(ext)
+        if mime is None:
+            return web.Response(status=404)
+
+        raw = self._images_dir / name
+        if raw.is_symlink():
+            return web.Response(status=404)
+        path = raw.resolve()
+        try:
+            path.relative_to(self._images_dir)
+        except ValueError:
+            return web.Response(status=404)
+        if not path.is_file():
+            return web.Response(status=404)
+
+        return web.FileResponse(
+            path,
+            headers={
+                "Content-Type": mime,
+                "Cache-Control": "public, max-age=86400",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     def _process_file_result(self, result: dict[str, Any]) -> dict[str, Any]:
         """If result is type=file with base64 data, store to disk and replace with download URL."""
@@ -868,6 +912,7 @@ class SidecarApp:
                 web.post("/quote", self.handle_quote),
                 web.get("/result/{job_id}", self.handle_result),
                 web.get("/download/{file_id}", self.handle_download),
+                web.get("/images/{name}", self.handle_image),
                 web.get("/info", self.handle_info),
             ]
         )

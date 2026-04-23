@@ -8,6 +8,12 @@ A zero-config reverse proxy with automatic Let's Encrypt SSL. No NGINX or Certbo
 - Gets and renews SSL certificates automatically.
 - Proxies requests to `X-Agent-Endpoint` header or `?endpoint=` parameter.
 - Adds standard CORS headers.
+- `GET /img?url=<http-image-url>` — image proxy so https frontends can load
+  images hosted on http agents without mixed-content blocks.
+  - PNG / JPEG / GIF / WebP only (SVG blocked)
+  - 5 MB response cap
+  - cookies and `Authorization` are stripped both ways
+  - private-network targets blocked by `safeDialContext`
 
 ## Run via Docker
 Make sure your domain's A-record points to your server's IP.

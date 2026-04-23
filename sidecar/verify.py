@@ -12,6 +12,7 @@ from typing import Any
 
 from pytoniq_core import Transaction
 from tonutils.clients import LiteBalancer
+from tonutils.exceptions import BalancerError, ProviderResponseError
 from tonutils.types import NetworkGlobalID
 from transfer import PAYMENT_OPCODE
 from jetton import parse_transfer_notification
@@ -208,15 +209,20 @@ class WalletMonitor:
                     break  # Avoid infinite loop if API behaves unexpectedly
                 current_lt = last_tx.lt
 
-            self._last_processed_lt = new_lt_watermark
+        except (BalancerError, ProviderResponseError) as e:
+            logger.warning("WalletMonitor: tx fetch interrupted (%s), partial results saved", e)
+
+        except Exception:
+            logger.exception("WalletMonitor poll failed")
+
+        finally:
+            if new_lt_watermark > self._last_processed_lt:
+                self._last_processed_lt = new_lt_watermark
 
             # Evict stale entries
             for k, tx in list(self._by_nonce.items()):
                 if tx.now < cutoff:
                     del self._by_nonce[k]
-
-        except Exception:
-            logger.exception("WalletMonitor poll failed")
 
     async def _loop(self) -> None:
         cooldown = 2.0  # minimum seconds between polls to prevent LiteServer spam
@@ -487,12 +493,12 @@ class JettonPaymentVerifier:
         self.jetton_wallet_address: str = ""
 
     async def start(self) -> None:
-        from tonutils.contracts.jetton.master import BaseJettonMaster
+        from tonutils.contracts.jetton.master import JettonMasterStablecoin
 
         self._client = LiteBalancer.from_network_config(self._network)
         await self._client.connect()
 
-        master = await BaseJettonMaster.from_address(self._client, self._usdt_master)
+        master = await JettonMasterStablecoin.from_address(self._client, self._usdt_master)
         addr = await master.get_wallet_address(self._agent_wallet)
         self.jetton_wallet_address = addr.to_str(
             is_user_friendly=True, is_bounceable=False,
