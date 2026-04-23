@@ -241,6 +241,35 @@ body {
 .agent-item--open > .agent-row { background: var(--primary-dim); }
 .agent-row:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; border-radius: var(--radius); }
 
+.agent-thumb {
+  width: 36px; height: 36px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.agent-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.agent-gallery-item {
+  display: block;
+  aspect-ratio: 1 / 1;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.agent-gallery-item img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
 .agent-row-left { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
 .agent-row-name {
   font-weight: 500; font-size: 14px;

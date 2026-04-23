@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useTonConnectUI, useTonAddress } from '@tonconnect/ui-react'
 import { Address } from '@ton/core'
 import { resolveDownloadUrl } from '../lib/agentClient'
+import { resolveImageSrc } from '../lib/imageProxy'
 import type { ConnectionMode } from '../lib/agentClient'
 import { ResultRenderer } from './ResultRenderer'
 import type { Agent, ArgSchema } from '../types'
@@ -71,6 +72,59 @@ function friendlyAddr(raw: string): string {
   } catch {
     return raw
   }
+}
+
+function AgentThumb({ url }: { url: string }) {
+  const [failed, setFailed] = useState(false)
+  const src = resolveImageSrc(url)
+  if (!src || failed) return null
+  return (
+    <img
+      className="agent-thumb"
+      src={src}
+      alt=""
+      loading="lazy"
+      decoding="async"
+      referrerPolicy="no-referrer"
+      crossOrigin="anonymous"
+      onError={() => setFailed(true)}
+    />
+  )
+}
+
+function AgentGallery({ images }: { images: string[] }) {
+  const [failed, setFailed] = useState<Set<number>>(new Set())
+  const visible = images
+    .map((url, i) => ({ url, i }))
+    .filter(({ i }) => !failed.has(i))
+  if (visible.length === 0) return null
+  return (
+    <div className="agent-gallery">
+      {visible.map(({ url, i }) => {
+        const src = resolveImageSrc(url)
+        if (!src) return null
+        return (
+          <a
+            key={i}
+            className="agent-gallery-item"
+            href={src}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <img
+              src={src}
+              alt=""
+              loading="lazy"
+              decoding="async"
+              referrerPolicy="no-referrer"
+              crossOrigin="anonymous"
+              onError={() => setFailed(prev => new Set(prev).add(i))}
+            />
+          </a>
+        )
+      })}
+    </div>
+  )
 }
 
 function ShareButton({ sidecarId }: { sidecarId: string }) {
@@ -181,6 +235,7 @@ export function AgentItem({ agent, expanded, onToggle, locked }: Props) {
     <div className={`agent-item ${expanded ? 'agent-item--open' : ''}${locked ? ' agent-item--locked' : ''}`}>
       {/* Row — always visible */}
       <button className="agent-row" onClick={locked ? undefined : onToggle} aria-expanded={expanded} disabled={locked}>
+        {(agent.previewUrl || agent.avatarUrl) && <AgentThumb url={agent.previewUrl || agent.avatarUrl!} />}
         <div className="agent-row-left">
           {!locked && <span className="agent-row-name">{agent.name || agent.address.slice(0, 10) + '…'}</span>}
           <div className="agent-row-meta">
@@ -211,6 +266,7 @@ export function AgentItem({ agent, expanded, onToggle, locked }: Props) {
       {/* Expanded body */}
       {expanded && (
         <div className="agent-body">
+          {agent.images && agent.images.length > 0 && <AgentGallery images={agent.images} />}
           <div className="agent-body-meta">
             <div className="meta-item">
               <span className="meta-label">Endpoint</span>

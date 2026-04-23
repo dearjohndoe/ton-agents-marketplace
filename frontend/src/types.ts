@@ -34,5 +34,8 @@ export interface Agent {
   lastHeartbeat: number // unix timestamp
   hasQuote?: boolean
   resultSchema?: ResultSchema
+  previewUrl?: string
+  avatarUrl?: string
+  images?: string[]
 }
 

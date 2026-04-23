@@ -2,6 +2,7 @@ import axios from 'axios'
 import { Cell } from '@ton/core'
 import { REGISTRY_ADDRESS, TONCENTER_BASE, HEARTBEAT_OPCODE, TX_PAGE_SIZE } from '../config'
 import type { Agent } from '../types'
+import { sanitizeImageUrl, sanitizeImageList } from './imageProxy'
 
 const HEARTBEAT_OPCODE_HEX = `0x${HEARTBEAT_OPCODE.toString(16)}`
 
@@ -41,6 +42,9 @@ function parseHeartbeatTx(tx: any): Agent | null {
       lastHeartbeat: tx.now,
       hasQuote: payload.has_quote === true,
       resultSchema: payload.result_schema ?? undefined,
+      previewUrl: sanitizeImageUrl(payload.preview_url) ?? undefined,
+      avatarUrl: sanitizeImageUrl(payload.avatar_url) ?? undefined,
+      images: sanitizeImageList(payload.images),
     }
   } catch {
     return null

@@ -15,6 +15,13 @@ export const MOCK_AGENTS: Agent[] = [
       target_lang: { type: 'string', description: 'Target language code (en, ru, de…)', required: false },
     },
     lastHeartbeat: Math.floor(Date.now() / 1000) - 120,
+    previewUrl: 'https://picsum.photos/seed/translator/200',
+    avatarUrl: 'https://picsum.photos/seed/translator-av/80',
+    images: [
+      'https://picsum.photos/seed/tr1/400',
+      'https://picsum.photos/seed/tr2/400',
+      'https://picsum.photos/seed/tr3/400',
+    ],
   },
 
   // ── USDT only ──
@@ -32,6 +39,14 @@ export const MOCK_AGENTS: Agent[] = [
       style: { type: 'string', description: 'Art style (realistic, anime, etc.)', required: false },
     },
     lastHeartbeat: Math.floor(Date.now() / 1000) - 60,
+    previewUrl: 'https://picsum.photos/seed/imggen/200',
+    images: [
+      'https://picsum.photos/seed/ig1/400',
+      'https://picsum.photos/seed/ig2/400',
+      'https://picsum.photos/seed/ig3/400',
+      'https://picsum.photos/seed/ig4/400',
+      'https://picsum.photos/seed/ig5/400',
+    ],
   },
 
   // ── Both TON + USDT ──
@@ -51,7 +66,7 @@ export const MOCK_AGENTS: Agent[] = [
     hasQuote: true,
   },
 
-  // ── TON only, cheap ──
+  // ── TON only, cheap — avatar only, no preview ──
   {
     sidecarId: 'mock-4',
     address: 'EQB3ncyBUTjZUA5EnFKR5_EnOMI9V1tTeDShu7XFBN3Eaacq',
@@ -65,9 +80,10 @@ export const MOCK_AGENTS: Agent[] = [
       max_length: { type: 'number', description: 'Max summary length in words', required: false },
     },
     lastHeartbeat: Math.floor(Date.now() / 1000) - 5400,
+    avatarUrl: 'https://picsum.photos/seed/summarizer-av/80',
   },
 
-  // ── Both TON + USDT, no quote ──
+  // ── Both TON + USDT — preview only, no avatar ──
   {
     sidecarId: 'mock-5',
     address: 'EQA0i8-CdGnF_DhUHHf92R1ONH6sIA9vLZ_WLcCIhfBBXwtG',
@@ -82,6 +98,7 @@ export const MOCK_AGENTS: Agent[] = [
       language: { type: 'string', description: 'Programming language', required: false },
     },
     lastHeartbeat: Math.floor(Date.now() / 1000) - 200,
+    previewUrl: 'https://picsum.photos/seed/codeassist/200',
   },
 
   // ── USDT only, with quote ──
@@ -103,7 +120,7 @@ export const MOCK_AGENTS: Agent[] = [
     resultSchema: { type: 'string' },
   },
 
-  // ── Both TON + USDT, expensive ──
+  // ── Both TON + USDT, expensive — preview + avatar (fallback check) ──
   {
     sidecarId: 'mock-7',
     address: 'EQBvW8Z5huBkMJYdnfAEM5JqTNkuWX3diqYENkWsIL0XggGG',
@@ -118,6 +135,8 @@ export const MOCK_AGENTS: Agent[] = [
     },
     lastHeartbeat: Math.floor(Date.now() / 1000) - 45,
     resultSchema: { type: 'file', mime_type: 'application/pdf' },
+    previewUrl: 'https://picsum.photos/seed/pdfgen/200',
+    avatarUrl: 'https://picsum.photos/seed/pdfgen-av/80',
   },
 
   // ── USDT only, micro price ──
