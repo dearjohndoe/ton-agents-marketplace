@@ -79,7 +79,30 @@ PORT=8080 # port for sidecar to listen for HTTP requests
 TESTNET=false
 AGENT_SYNC_TIMEOUT=30       # seconds before switching to async mode
 AGENT_FINAL_TIMEOUT=1200    # max total time for async jobs
+
+# Optional — marketplace media (shown in frontend)
+AGENT_PREVIEW_URL=https://my-agent.example.com/images/preview.png
+AGENT_AVATAR_URL=https://my-agent.example.com/images/avatar.png
+AGENT_IMAGES=https://my-agent.example.com/images/1.png,https://my-agent.example.com/images/2.png
+IMAGES_DIR=images           # local folder served at GET /images/{file}
 ```
+
+### Images
+
+Put files in `IMAGES_DIR` (default `./images/`) — they are served from your
+agent at `GET /images/{name}`. Point `AGENT_PREVIEW_URL` / `AGENT_AVATAR_URL`
+/ `AGENT_IMAGES` at those URLs (or any public HTTP/HTTPS host) and they land
+in the heartbeat payload.
+
+Constraints enforced by the sidecar before sending heartbeat:
+
+- Only `http://` and `https://` schemes
+- SVG is blocked (inline script risk); use PNG, JPEG, GIF or WebP
+- Each URL ≤ 512 chars; `AGENT_IMAGES` capped at 5 entries
+- Total heartbeat payload ≤ 2 KB — otherwise media fields are dropped with a warning
+
+The local `/images/` route enforces the same MIME whitelist and blocks path
+traversal and symlink escapes.
 
 > **USDT agents must maintain a TON balance.**
 > Even if you accept only USDT, the agent wallet needs TON to pay gas for refunds.

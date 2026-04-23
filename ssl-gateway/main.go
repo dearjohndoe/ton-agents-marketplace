@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +24,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/img", imageProxyHandler)
 	mux.HandleFunc("/", proxyHandler)
 	handler := corsMiddleware(mux)
 
@@ -162,6 +165,121 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	proxy.ServeHTTP(w, r)
+}
+
+// Image proxy — lets https-hosted frontends load images from http agent endpoints
+// without mixed-content blocking. Locked down to image MIME types only; cookies
+// and credentials are stripped both ways to prevent SSRF-style session leaks.
+
+const imageMaxBytes = 5 * 1024 * 1024
+
+var allowedImageTypes = map[string]bool{
+	"image/png":  true,
+	"image/jpeg": true,
+	"image/gif":  true,
+	"image/webp": true,
+}
+
+func imageProxyHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	raw := r.URL.Query().Get("url")
+	if raw == "" {
+		http.Error(w, `{"error":"missing url"}`, http.StatusBadRequest)
+		return
+	}
+	if len(raw) > 2048 {
+		http.Error(w, `{"error":"url too long"}`, http.StatusBadRequest)
+		return
+	}
+
+	target, err := url.Parse(raw)
+	if err != nil || target.Host == "" {
+		http.Error(w, `{"error":"invalid url"}`, http.StatusBadRequest)
+		return
+	}
+	if target.Scheme != "http" && target.Scheme != "https" {
+		http.Error(w, `{"error":"scheme not allowed"}`, http.StatusBadRequest)
+		return
+	}
+	// Block SVG by path extension too — response content-type is also checked
+	// below, but extension gives an early out and defends against servers that
+	// mislabel content.
+	ext := strings.ToLower(path.Ext(target.Path))
+	if ext == ".svg" || ext == ".svgz" {
+		http.Error(w, `{"error":"svg not allowed"}`, http.StatusUnsupportedMediaType)
+		return
+	}
+
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), nil)
+	if err != nil {
+		http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+		return
+	}
+	req.Header.Set("Accept", "image/*")
+	req.Header.Set("User-Agent", "catallaxy-gateway/1.0")
+
+	resp, err := imageClient.Do(req)
+	if err != nil {
+		log.Printf("image upstream error: %s -> %v", target.String(), err)
+		http.Error(w, `{"error":"upstream unreachable"}`, http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		http.Error(w, `{"error":"upstream error"}`, http.StatusBadGateway)
+		return
+	}
+
+	ct := strings.ToLower(strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0]))
+	if !allowedImageTypes[ct] {
+		http.Error(w, `{"error":"unsupported content-type"}`, http.StatusUnsupportedMediaType)
+		return
+	}
+
+	if cl := resp.ContentLength; cl > imageMaxBytes {
+		http.Error(w, `{"error":"image too large"}`, http.StatusRequestEntityTooLarge)
+		return
+	}
+
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if resp.ContentLength > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(resp.ContentLength, 10))
+	}
+	w.WriteHeader(http.StatusOK)
+
+	if r.Method == http.MethodHead {
+		return
+	}
+
+	written, err := io.Copy(w, io.LimitReader(resp.Body, imageMaxBytes+1))
+	if err != nil {
+		log.Printf("image copy error: %s -> %v", target.String(), err)
+		return
+	}
+	if written > imageMaxBytes {
+		log.Printf("image exceeded cap: %s (%d bytes)", target.String(), written)
+	}
+}
+
+var imageClient = &http.Client{
+	Timeout:   30 * time.Second,
+	Transport: transport,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 3 {
+			return fmt.Errorf("too many redirects")
+		}
+		if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+			return fmt.Errorf("redirect to non-http scheme blocked")
+		}
+		return nil
+	},
 }
 
 func joinPath(base, extra string) string {

@@ -79,7 +79,30 @@ PORT=8080 # порт на котором sidecar будет слушать HTTP 
 TESTNET=false
 AGENT_SYNC_TIMEOUT=30       # секунды до переключения в async режим
 AGENT_FINAL_TIMEOUT=1200    # максимальное время для async задач
+
+# Опционально — картинки для витрины
+AGENT_PREVIEW_URL=https://my-agent.example.com/images/preview.png
+AGENT_AVATAR_URL=https://my-agent.example.com/images/avatar.png
+AGENT_IMAGES=https://my-agent.example.com/images/1.png,https://my-agent.example.com/images/2.png
+IMAGES_DIR=images           # локальная папка, отдаётся по GET /images/{file}
 ```
+
+### Картинки
+
+Положите файлы в `IMAGES_DIR` (по умолчанию `./images/`) — они отдаются
+агентом по `GET /images/{name}`. В `AGENT_PREVIEW_URL` / `AGENT_AVATAR_URL`
+/ `AGENT_IMAGES` укажите эти URL (или любой публичный HTTP/HTTPS хост) —
+они попадут в heartbeat.
+
+Ограничения (валидируются перед отправкой heartbeat):
+
+- Только схемы `http://` и `https://`
+- SVG заблокирован (риск inline-скрипта); используйте PNG, JPEG, GIF или WebP
+- Каждый URL ≤ 512 символов; `AGENT_IMAGES` — максимум 5 штук
+- Общий payload heartbeat ≤ 2 KB — иначе media-поля выкидываются с warning
+
+Локальный `/images/`-роут применяет тот же MIME-whitelist и блокирует
+path-traversal и симлинк-побеги.
 
 > **USDT-агенты должны поддерживать баланс TON на кошельке.**
 > Даже если агент принимает только USDT, для рефанда нужно отправить джеттон-перевод — это стоит ~0.06 TON газа из TON-баланса кошелька агента.

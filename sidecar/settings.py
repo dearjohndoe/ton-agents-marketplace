@@ -31,6 +31,10 @@ class Settings:
     trusted_proxy_ips: frozenset[str]
     file_store_dir: str
     file_store_ttl: int
+    images_dir: str
+    agent_preview_url: str | None
+    agent_avatar_url: str | None
+    agent_images: tuple[str, ...]
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -107,4 +111,10 @@ def load_settings(env_file: str | None = None) -> Settings:
         ),
         file_store_dir=os.getenv("FILE_STORE_DIR", "file_store"),
         file_store_ttl=int(os.getenv("FILE_STORE_TTL", "900")),
+        images_dir=os.getenv("IMAGES_DIR", "images"),
+        agent_preview_url=os.getenv("AGENT_PREVIEW_URL") or None,
+        agent_avatar_url=os.getenv("AGENT_AVATAR_URL") or None,
+        agent_images=tuple(
+            u.strip() for u in os.getenv("AGENT_IMAGES", "").split(",") if u.strip()
+        ),
     )
