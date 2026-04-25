@@ -1,6 +1,6 @@
 import axios from 'axios'
 import { SSL_GATEWAY } from '../config'
-import type { TypedResult } from '../types'
+import type { Sku, TypedResult } from '../types'
 
 /**
  * Decides whether to call the agent directly or via ssl-gateway.
@@ -56,9 +56,11 @@ function resolveUrl(endpoint: string, path: string): { url: string; headers?: Re
 
 export interface InvokeResult {
   jobId: string
-  status: 'done' | 'pending' | 'error'
+  status: 'done' | 'pending' | 'error' | 'refunded_out_of_stock'
   result?: TypedResult
   error?: string
+  reason?: string
+  refundTx?: string
 }
 
 export interface PaymentRequest {
@@ -103,9 +105,14 @@ export async function invokePreflight(
   endpoint: string,
   capability: string,
   body: Record<string, string | number | boolean>,
-  quoteId?: string
+  quoteId?: string,
+  sku?: string,
 ): Promise<PreflightResult> {
-  const form = buildMultipart({ capability, ...(quoteId ? { quote_id: quoteId } : {}) }, body)
+  const form = buildMultipart({
+    capability,
+    ...(quoteId ? { quote_id: quoteId } : {}),
+    ...(sku ? { sku } : {}),
+  }, body)
   const { url, headers } = resolveUrl(endpoint, '/invoke')
   try {
     await axios.post(url, form, { timeout: 90000, headers })
@@ -142,21 +149,35 @@ export async function invokeAgent(
   quoteId?: string,
   fileFields?: Record<string, File>,
   rail?: string,
+  sku?: string,
 ): Promise<InvokeResult> {
   const form = buildMultipart(
-    { tx, nonce, capability, ...(quoteId ? { quote_id: quoteId } : {}), ...(rail ? { rail } : {}) },
+    {
+      tx, nonce, capability,
+      ...(quoteId ? { quote_id: quoteId } : {}),
+      ...(rail ? { rail } : {}),
+      ...(sku ? { sku } : {}),
+    },
     body,
     fileFields,
   )
   const { url, headers } = resolveUrl(endpoint, '/invoke')
   const { data } = await axios.post(url, form, { timeout: 90000, headers })
-  return { jobId: data.job_id, status: data.status, result: data.result, error: data.error }
+  return {
+    jobId: data.job_id, status: data.status,
+    result: data.result, error: data.error,
+    reason: data.reason, refundTx: data.refund_tx,
+  }
 }
 
 export async function pollResult(endpoint: string, jobId: string): Promise<InvokeResult> {
   const { url, headers } = resolveUrl(endpoint, `/result/${jobId}`)
   const { data } = await axios.get(url, { timeout: 10000, headers })
-  return { jobId, status: data.status, result: data.result, error: data.error }
+  return {
+    jobId, status: data.status,
+    result: data.result, error: data.error,
+    reason: data.reason, refundTx: data.refund_tx,
+  }
 }
 
 export interface QuotePlanStep {
@@ -185,9 +206,10 @@ export interface QuoteResult {
 export async function fetchQuote(
   endpoint: string,
   capability: string,
-  body: Record<string, string | number | boolean>
+  body: Record<string, string | number | boolean>,
+  sku?: string,
 ): Promise<QuoteResult> {
-  const form = buildMultipart({ capability }, body)
+  const form = buildMultipart({ capability, ...(sku ? { sku } : {}) }, body)
   const { url, headers } = resolveUrl(endpoint, '/quote')
   const { data } = await axios.post(url, form, { timeout: 60000, headers })
   return {
@@ -197,6 +219,30 @@ export async function fetchQuote(
     expiresAt: data.expires_at,
     note: data.note ?? null,
   }
+}
+
+export interface AgentInfo {
+  skus: Sku[]
+  paymentRails: string[]
+}
+
+export async function fetchAgentInfo(endpoint: string): Promise<AgentInfo> {
+  await checkGatewayHealth()
+  const { url, headers } = resolveUrl(endpoint, '/info')
+  const { data } = await axios.get(url, { timeout: 8000, headers })
+  const skus: Sku[] = Array.isArray(data?.skus)
+    ? data.skus.map((s: any) => ({
+        id: String(s.id),
+        title: s.title ? String(s.title) : undefined,
+        priceTon: typeof s.price_ton === 'number' ? s.price_ton : undefined,
+        priceUsdt: typeof s.price_usd === 'number' ? s.price_usd : undefined,
+        stockLeft: typeof s.stock_left === 'number' ? s.stock_left : undefined,
+        total: typeof s.total === 'number' ? s.total : undefined,
+        sold: typeof s.sold === 'number' ? s.sold : undefined,
+      }))
+    : []
+  const paymentRails: string[] = Array.isArray(data?.payment_rails) ? data.payment_rails : []
+  return { skus, paymentRails }
 }
 
 export async function pingAgent(endpoint: string): Promise<boolean> {
