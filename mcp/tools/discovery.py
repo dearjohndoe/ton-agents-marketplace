@@ -54,6 +54,12 @@ def _agent_to_dict(a: AgentInfo, pinged: bool = False) -> dict[str, Any]:
     if a.price_usdt:
         d["price_usdt"] = a.price_usdt
         d["price_usdt_human"] = f"{a.price_usdt / 1e6:.6f}".rstrip("0").rstrip(".")
+    if a.preview_url:
+        d["preview_url"] = a.preview_url
+    if a.avatar_url:
+        d["avatar_url"] = a.avatar_url
+    if a.images:
+        d["images"] = list(a.images)
     if pinged:
         actual_ton = f"{a.actual_price / 1e9:.9f}".rstrip("0").rstrip(".")
         d["actual_price_ton"] = actual_ton
