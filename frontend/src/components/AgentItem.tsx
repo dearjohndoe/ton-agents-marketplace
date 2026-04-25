@@ -1,11 +1,11 @@
 import { useState } from 'react'
-import { useTonConnectUI, useTonAddress } from '@tonconnect/ui-react'
+import { useWalletUI, useWalletAddress } from '../lib/wallet'
 import { Address } from '@ton/core'
 import { resolveDownloadUrl } from '../lib/agentClient'
 import { resolveImageSrc } from '../lib/imageProxy'
 import type { ConnectionMode } from '../lib/agentClient'
 import { ResultRenderer } from './ResultRenderer'
-import type { Agent, ArgSchema } from '../types'
+import type { Agent, ArgSchema, Sku } from '../types'
 import { TESTNET } from '../config'
 import { useAgentRating } from '../hooks/useAgentRating'
 import { useAgentCall } from '../hooks/useAgentCall'
@@ -214,9 +214,83 @@ function InputFields({ schema, fields, setFields, setFileFields, disabled }: {
   </>
 }
 
+function SkuSelector({ skus, selectedId, onSelect, disabled }: {
+  skus: Sku[]
+  selectedId: string
+  onSelect: (id: string) => void
+  disabled: boolean
+}) {
+  return (
+    <div className="sku-selector">
+      <span className="meta-label">Variant</span>
+      <div className="sku-list">
+        {skus.map(s => {
+          const soldOut = s.stockLeft != null && s.stockLeft <= 0
+          const active = s.id === selectedId
+          return (
+            <button
+              key={s.id}
+              type="button"
+              className={`sku-item${active ? ' sku-item--active' : ''}${soldOut ? ' sku-item--sold-out' : ''}`}
+              onClick={() => !soldOut && !disabled && onSelect(s.id)}
+              disabled={disabled || soldOut}
+              title={soldOut ? 'Sold out' : ''}
+            >
+              <span className="sku-title">{s.title || s.id}</span>
+              <span className="sku-price">
+                {s.priceTon != null && <span className="price-ton">{nanoToTon(s.priceTon)} TON</span>}
+                {s.priceTon != null && s.priceUsdt != null && <span className="price-sep"> / </span>}
+                {s.priceUsdt != null && <span className="price-usdt">{microToUsdt(s.priceUsdt)} USDT</span>}
+              </span>
+              <span className="sku-stock">
+                {soldOut ? 'Sold out'
+                  : s.stockLeft != null ? `${s.stockLeft} left`
+                  : '∞'}
+              </span>
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function StockBadge({ sku }: { sku: Sku }) {
+  if (sku.stockLeft == null) return null
+  if (sku.stockLeft <= 0) {
+    return <div className="alert alert-warn">Sold out.</div>
+  }
+  return <div className="stock-badge">{sku.stockLeft} in stock</div>
+}
+
+function RefundedBlock({ reason, refundTx, onReset }: {
+  reason: string
+  refundTx: string
+  onReset: () => void
+}) {
+  return (
+    <div className="result-box result-box--refund">
+      <span className="meta-label">Refunded — out of stock</span>
+      {reason && <p className="refund-reason">{reason}</p>}
+      {refundTx && (
+        <p className="refund-tx">
+          Refund tx:{' '}
+          <a
+            href={`https://${TESTNET ? 'testnet.' : ''}tonviewer.com/transaction/${refundTx}`}
+            target="_blank" rel="noopener noreferrer" className="link"
+          >
+            {refundTx.slice(0, 10)}…{refundTx.slice(-10)}
+          </a>
+        </p>
+      )}
+      <button className="btn btn-outline btn-sm" onClick={onReset}>Try another variant</button>
+    </div>
+  )
+}
+
 export function AgentItem({ agent, expanded, onToggle, locked }: Props) {
-  const [tonConnectUI] = useTonConnectUI()
-  const walletAddress = useTonAddress()
+  const tonConnectUI = useWalletUI()
+  const walletAddress = useWalletAddress()
 
   const call = useAgentCall(agent, expanded, tonConnectUI)
   const { rating: onChainRating, loading: ratingLoading, error: ratingError, refresh: ratingRefresh } = useAgentRating(agent.address, agent.sidecarId, expanded)
@@ -230,6 +304,10 @@ export function AgentItem({ agent, expanded, onToggle, locked }: Props) {
 
   const inQuoteFlow = agent.hasQuote && ['quoted', 'paying', 'invoking', 'polling'].includes(call.status)
   const fieldsDisabled = call.busy || (agent.hasQuote === true && call.status === 'quoted')
+  const skuTon = call.selectedSku?.priceTon ?? agent.price
+  const skuUsdt = call.selectedSku?.priceUsdt ?? agent.priceUsdt
+  const selectedSoldOut = call.selectedSku?.stockLeft != null && call.selectedSku.stockLeft <= 0
+  const submitDisabled = call.busy || online === false || selectedSoldOut
 
   return (
     <div className={`agent-item ${expanded ? 'agent-item--open' : ''}${locked ? ' agent-item--locked' : ''}`}>
@@ -293,6 +371,12 @@ export function AgentItem({ agent, expanded, onToggle, locked }: Props) {
 
           {!walletAddress ? (
             <div className="alert alert-info">Connect your wallet to call this agent.</div>
+          ) : call.status === 'refunded_out_of_stock' ? (
+            <RefundedBlock
+              reason={call.refundReason}
+              refundTx={call.refundTx}
+              onReset={handleReset}
+            />
           ) : call.status === 'done' && call.result ? (
             <div className="result-box">
               <span className="meta-label">Result</span>
@@ -338,6 +422,18 @@ export function AgentItem({ agent, expanded, onToggle, locked }: Props) {
             >
               {call.errorMsg && <div className="alert alert-error">{call.errorMsg}</div>}
 
+              {call.skus.length > 1 && (
+                <SkuSelector
+                  skus={call.skus}
+                  selectedId={call.selectedSkuId}
+                  onSelect={call.setSelectedSkuId}
+                  disabled={fieldsDisabled}
+                />
+              )}
+              {call.skus.length === 1 && call.skus[0] && (
+                <StockBadge sku={call.skus[0]} />
+              )}
+
               <InputFields
                 schema={agent.argsSchema}
                 fields={call.fields}
@@ -367,7 +463,7 @@ export function AgentItem({ agent, expanded, onToggle, locked }: Props) {
                     <div className="quote-note">{call.quote.note}</div>
                   )}
                   <div className="quote-meta">
-                    <span className="quote-price">{nanoToTon(call.quote.price)} TON{agent.priceUsdt ? ` / ${microToUsdt(agent.priceUsdt)} USDT` : ''}</span>
+                    <span className="quote-price">{nanoToTon(call.quote.price)} TON{skuUsdt ? ` / ${microToUsdt(skuUsdt)} USDT` : ''}</span>
                     <span className={`quote-timer ${call.quoteSecondsLeft === 0 ? 'quote-timer--expired' : ''}`}>
                       {call.quoteSecondsLeft > 0 ? `Expires in ${call.quoteSecondsLeft}s` : 'Quote expired'}
                     </span>
@@ -386,13 +482,14 @@ export function AgentItem({ agent, expanded, onToggle, locked }: Props) {
 
               {inQuoteFlow ? (
                 <div className="quote-actions">
-                  <button type="submit" className="btn btn-primary" disabled={call.busy || call.quoteSecondsLeft === 0 || online === false}>
+                  <button type="submit" className="btn btn-primary" disabled={submitDisabled || call.quoteSecondsLeft === 0}>
                     {call.status === 'paying' ? 'Waiting for payment…'
                       : call.status === 'invoking' ? 'Calling agent…'
                       : call.status === 'polling' ? 'Waiting for result…'
                       : call.quoteSecondsLeft === 0 ? 'Quote expired'
-                      : call.selectedRail === 'USDT' && agent.priceUsdt
-                        ? `Approve & Pay ${microToUsdt(agent.priceUsdt)} USDT`
+                      : selectedSoldOut ? 'Sold out'
+                      : call.selectedRail === 'USDT' && skuUsdt
+                        ? `Approve & Pay ${microToUsdt(skuUsdt)} USDT`
                         : `Approve & Pay ${nanoToTon(call.quote!.price)} TON`}
                   </button>
                   <button type="button" className="btn btn-outline btn-sm" onClick={() => call.resetQuote()}>
@@ -400,12 +497,14 @@ export function AgentItem({ agent, expanded, onToggle, locked }: Props) {
                   </button>
                 </div>
               ) : agent.hasQuote ? (
-                <button type="submit" className="btn btn-primary" disabled={call.busy || online === false}>
-                  {call.status === 'quoting' ? 'Getting quote…' : 'Get Quote'}
+                <button type="submit" className="btn btn-primary" disabled={submitDisabled}>
+                  {call.status === 'quoting' ? 'Getting quote…'
+                    : selectedSoldOut ? 'Sold out'
+                    : 'Get Quote'}
                 </button>
               ) : (
                 <>
-                  {agent.price > 0 && agent.priceUsdt != null && agent.priceUsdt > 0 && (
+                  {skuTon > 0 && skuUsdt != null && skuUsdt > 0 && (
                     <div className="rail-selector">
                       <label className="rail-option">
                         <input type="radio" name="rail" value="TON"
@@ -423,13 +522,14 @@ export function AgentItem({ agent, expanded, onToggle, locked }: Props) {
                       </label>
                     </div>
                   )}
-                  <button type="submit" className="btn btn-primary" disabled={call.busy || online === false}>
+                  <button type="submit" className="btn btn-primary" disabled={submitDisabled}>
                     {call.status === 'paying' ? 'Waiting for payment…'
                       : call.status === 'invoking' ? 'Calling agent…'
                       : call.status === 'polling' ? 'Waiting for result…'
-                      : call.selectedRail === 'USDT' && agent.priceUsdt
-                        ? `Pay ${microToUsdt(agent.priceUsdt)} USDT & Execute`
-                        : `Pay ${nanoToTon(agent.price)} TON & Execute`}
+                      : selectedSoldOut ? 'Sold out'
+                      : call.selectedRail === 'USDT' && skuUsdt
+                        ? `Pay ${microToUsdt(skuUsdt)} USDT & Execute`
+                        : `Pay ${nanoToTon(skuTon)} TON & Execute`}
                   </button>
                 </>
               )}

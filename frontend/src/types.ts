@@ -21,6 +21,16 @@ export interface TypedResult {
   expires_in?: number
 }
 
+export interface Sku {
+  id: string
+  title?: string
+  priceTon?: number      // nanotons
+  priceUsdt?: number     // micro-USDT (6 decimals)
+  stockLeft?: number     // undefined = untracked / infinite
+  total?: number
+  sold?: number
+}
+
 export interface Agent {
   address: string       // sender of heartbeat TX (raw format)
   sidecarId: string     // unique per sidecar instance, used as dedup key

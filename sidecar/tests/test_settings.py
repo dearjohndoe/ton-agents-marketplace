@@ -191,3 +191,74 @@ def test_derive_wallet_address_strips_0x_prefix():
 def test_derive_wallet_address_bad_hex_raises():
     with pytest.raises(ValueError):
         settings_module._derive_wallet_address("zz" * 32, testnet=False)
+
+
+# ── AGENT_SKUS parsing ─────────────────────────────────────────────────
+
+def test_load_settings_skus_simple(clean_env, monkeypatch):
+    _apply_required(monkeypatch)
+    monkeypatch.setenv("AGENT_SKUS", "basic:10:ton=1000000000,premium:3:ton=5000000000")
+    s = load_settings(env_file="/nonexistent/.env")
+    assert len(s.skus) == 2
+    ids = [x.sku_id for x in s.skus]
+    assert ids == ["basic", "premium"]
+    assert s.skus[0].price_ton == 1_000_000_000
+    assert s.skus[0].initial_stock == 10
+    assert s.payment_rails == ("TON",)
+
+
+def test_load_settings_skus_with_both_rails(clean_env, monkeypatch):
+    _apply_required(monkeypatch)
+    monkeypatch.setenv(
+        "AGENT_SKUS",
+        "basic:10:ton=1000000000:usd=1500000,premium:3:ton=5000000000:usd=7000000",
+    )
+    s = load_settings(env_file="/nonexistent/.env")
+    assert set(s.payment_rails) == {"TON", "USDT"}
+    assert all(sku.price_ton and sku.price_usd for sku in s.skus)
+
+
+def test_load_settings_skus_inconsistent_rails_raises(clean_env, monkeypatch):
+    _apply_required(monkeypatch)
+    monkeypatch.setenv("AGENT_SKUS", "basic:10:ton=1000000000,premium:3:usd=1500000")
+    with pytest.raises(RuntimeError, match="inconsistent_sku_rails"):
+        load_settings(env_file="/nonexistent/.env")
+
+
+def test_load_settings_skus_no_price_raises(clean_env, monkeypatch):
+    _apply_required(monkeypatch)
+    monkeypatch.setenv("AGENT_SKUS", "basic:10:")
+    with pytest.raises(RuntimeError):
+        load_settings(env_file="/nonexistent/.env")
+
+
+def test_load_settings_skus_duplicate_id_raises(clean_env, monkeypatch):
+    _apply_required(monkeypatch)
+    monkeypatch.setenv("AGENT_SKUS", "basic:10:ton=1,basic:5:ton=2")
+    with pytest.raises(RuntimeError, match="Duplicate"):
+        load_settings(env_file="/nonexistent/.env")
+
+
+def test_load_settings_skus_titles_applied(clean_env, monkeypatch):
+    _apply_required(monkeypatch)
+    monkeypatch.setenv("AGENT_SKUS", "basic:10:ton=1000000000")
+    monkeypatch.setenv("AGENT_SKU_TITLES", "basic=Hello World")
+    s = load_settings(env_file="/nonexistent/.env")
+    assert s.skus[0].title == "Hello World"
+
+
+def test_load_settings_legacy_synth_single_default_sku(clean_env, monkeypatch):
+    _apply_required(monkeypatch)
+    monkeypatch.setenv("AGENT_PRICE", "7")
+    monkeypatch.setenv("AGENT_STOCK", "42")
+    s = load_settings(env_file="/nonexistent/.env")
+    assert len(s.skus) == 1
+    assert s.skus[0].sku_id == "default"
+    assert s.skus[0].price_ton == 7
+    assert s.skus[0].initial_stock == 42
+
+
+def test_load_settings_legacy_infinite_stock_when_unset(clean_env, monkeypatch):
+    _apply_required(monkeypatch)
+    s = load_settings(env_file="/nonexistent/.env")
+    assert s.skus[0].initial_stock is None

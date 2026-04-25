@@ -19,7 +19,8 @@ from storage import StateStore
 from transfer import TransferSender, refund_body
 from verify import PaymentVerificationError, PaymentVerifier, JettonPaymentVerifier, ProcessedTxStore, parse_nonce
 from jetton import USDT_MASTER_MAINNET, USDT_MASTER_TESTNET, USDT_REFUND_FEE
-from settings import Settings
+from settings import Settings, AgentSku, DEFAULT_SKU_ID
+from stock import StockStore
 
 logger = logging.getLogger("sidecar")
 
@@ -30,6 +31,8 @@ DESCRIBE_TIMEOUT = 10  # seconds
 class QuoteEntry:
     price: int
     expires_at: float  # unix timestamp
+    sku_id: str
+    price_usdt: int | None = None
     locked: bool = False
 
 
@@ -94,6 +97,9 @@ class SidecarApp:
         self._images_dir = Path(settings.images_dir).resolve()
         self.jobs = JobStore(ttl_seconds=settings.jobs_ttl)
         self.tx_store = ProcessedTxStore(settings.tx_db_path)
+        self.stock = StockStore(settings.stock_db_path)
+        self._skus_by_id: dict[str, AgentSku] = {s.sku_id: s for s in settings.skus}
+        self._single_sku: AgentSku | None = settings.skus[0] if len(settings.skus) == 1 else None
         self.verifier = PaymentVerifier(
             agent_wallet=settings.agent_wallet,
             min_amount=settings.agent_price,
@@ -145,7 +151,8 @@ class SidecarApp:
 
     async def refund_user(
         self, recipient: str, payment_amount: int, original_tx_hash: str, reason: str, rail: str = "TON",
-    ) -> None:
+    ) -> str | None:
+        """Send refund back to `recipient`. Returns refund tx hash on success, None otherwise."""
         if rail == "USDT":
             refund_amount = max(payment_amount - USDT_REFUND_FEE, 0)
             if refund_amount <= 0:
@@ -153,10 +160,10 @@ class SidecarApp:
                     "USDT refund skipped: amount too small after fee",
                     extra={"tx_hash": original_tx_hash, "payment_amount": payment_amount},
                 )
-                return
+                return None
             try:
                 fwd = refund_body(original_tx_hash, reason, self.sidecar_id)
-                await self.sender.send_jetton(
+                return await self.sender.send_jetton(
                     own_jetton_wallet=self._agent_jetton_wallet or "",
                     destination=recipient,
                     jetton_amount=refund_amount,
@@ -164,7 +171,7 @@ class SidecarApp:
                 )
             except Exception:
                 logger.exception("Failed to send USDT refund")
-            return
+                return None
 
         refund_amount = max(payment_amount - self.settings.refund_fee_nanoton, 0)
         if refund_amount <= 0:
@@ -176,12 +183,13 @@ class SidecarApp:
                     "refund_fee": self.settings.refund_fee_nanoton,
                 },
             )
-            return
+            return None
 
         try:
-            await self.sender.send(recipient, refund_amount, refund_body(original_tx_hash, reason, self.sidecar_id))
+            return await self.sender.send(recipient, refund_amount, refund_body(original_tx_hash, reason, self.sidecar_id))
         except Exception:
             logger.exception("Failed to send refund")
+            return None
 
     async def startup(self) -> None:
         state = self.state_store.load()
@@ -202,6 +210,8 @@ class SidecarApp:
 
         self._file_store_dir.mkdir(parents=True, exist_ok=True)
         self._images_dir.mkdir(parents=True, exist_ok=True)
+
+        await self.stock.init(self.settings.skus)
 
         self.heartbeat = HeartbeatManager(
             config=HeartbeatConfig(
@@ -264,6 +274,7 @@ class SidecarApp:
         if self.jetton_verifier:
             await self.jetton_verifier.close()
         await self.tx_store.close()
+        await self.stock.close()
 
     async def cleanup_loop(self) -> None:
         while not self.stop_event.is_set():
@@ -271,9 +282,43 @@ class SidecarApp:
             self._cleanup_expired_files()
             self._cleanup_rate_limits()
             try:
+                await self.stock.sweep_expired()
+            except Exception:
+                logger.exception("Stock sweep failed")
+            try:
                 await asyncio.wait_for(self.stop_event.wait(), timeout=60)
             except asyncio.TimeoutError:
                 pass
+
+    # ── SKU resolution ─────────────────────────────────────────────
+
+    def _resolve_sku(self, sku_field: str | None) -> tuple[AgentSku | None, web.Response | None]:
+        """Pick SKU from an explicit id. Falls back to single-SKU agent default.
+
+        Returns (sku, None) on success, (None, error_response) on failure.
+        """
+        requested = (sku_field or "").strip()
+        if requested:
+            sku = self._skus_by_id.get(requested)
+            if sku is None:
+                return None, web.json_response(
+                    {"error": "Unknown SKU", "sku": requested}, status=400,
+                )
+            return sku, None
+
+        if self._single_sku is not None:
+            return self._single_sku, None
+
+        return None, web.json_response(
+            {"error": "sku is required (multiple SKUs configured)",
+             "available_skus": [s.sku_id for s in self.settings.skus]},
+            status=400,
+        )
+
+    def _sku_price(self, sku: AgentSku, rail: str) -> int | None:
+        if rail == "USDT":
+            return sku.price_usd
+        return sku.price_ton
 
     # ── File store helpers ──────────────────────────────────────────
 
@@ -423,6 +468,10 @@ class SidecarApp:
             self.rate_limits.pop(ip, None)
 
     @staticmethod
+    def _is_out_of_stock_result(raw: dict[str, Any]) -> bool:
+        return isinstance(raw, dict) and str(raw.get("error", "")).strip() == "out_of_stock"
+
+    @staticmethod
     def _validate_result_structure(raw: dict[str, Any]) -> None:
         """Ensure agent result has the required {type, data} structure."""
         result = raw.get("result")
@@ -439,6 +488,7 @@ class SidecarApp:
         tx_hash: str,
         uploaded_files: dict[str, Path] | None = None,
         rail: str = "TON",
+        reservation_key: str | None = None,
     ):
         async def runner() -> dict[str, Any]:
             try:
@@ -453,7 +503,37 @@ class SidecarApp:
                         "PAYMENT_RAIL": rail,
                     },
                 )
+
+                if self._is_out_of_stock_result(raw):
+                    reason = str(raw.get("reason") or "agent reported out of stock")
+                    refund_tx = await self.refund_user(
+                        recipient=sender,
+                        payment_amount=amount,
+                        original_tx_hash=tx_hash,
+                        reason="out_of_stock",
+                        rail=rail,
+                    )
+                    if reservation_key:
+                        try:
+                            await self.stock.agent_out_of_stock(reservation_key)
+                        except Exception:
+                            logger.exception("agent_out_of_stock bookkeeping failed")
+                    # Return a special "done" record — handle_invoke / handle_result
+                    # render it as refunded_out_of_stock to the caller.
+                    return {
+                        "result": {
+                            "status": "refunded_out_of_stock",
+                            "reason": reason,
+                            "refund_tx": refund_tx,
+                        }
+                    }
+
                 self._validate_result_structure(raw)
+                if reservation_key:
+                    try:
+                        await self.stock.commit_sold(reservation_key, tx_hash)
+                    except Exception:
+                        logger.exception("commit_sold failed (agent succeeded but stock bookkeeping broke)")
                 return raw
             except Exception as exc:
                 if isinstance(exc, TimeoutError):
@@ -475,6 +555,11 @@ class SidecarApp:
                     )
                 except Exception:
                     logger.exception("Refund sub-task failed inside runner")
+                if reservation_key:
+                    try:
+                        await self.stock.release(reservation_key)
+                    except Exception:
+                        logger.exception("stock.release failed inside runner")
                 raise
             finally:
                 if uploaded_files:
@@ -487,15 +572,16 @@ class SidecarApp:
 
     async def _parse_multipart_invoke(
         self, request: web.Request
-    ) -> tuple[str, str, str, str | None, str, dict[str, Any], dict[str, Path]]:
+    ) -> tuple[str, str, str, str | None, str, str | None, dict[str, Any], dict[str, Path]]:
         """Parse multipart/form-data invoke request.
 
-        Returns: (tx_hash, nonce, capability, quote_id, rail, body_dict, uploaded_files)
+        Returns: (tx_hash, nonce, capability, quote_id, rail, sku, body_dict, uploaded_files)
         """
         reader = await request.multipart()
         tx_hash = nonce = capability = ""
         quote_id: str | None = None
         rail = "TON"
+        sku: str | None = None
         body: dict[str, Any] = {}
         uploaded_files: dict[str, Path] = {}
 
@@ -511,6 +597,8 @@ class SidecarApp:
                 quote_id = (await part.text()).strip() or None
             elif name == "rail":
                 rail = (await part.text()).strip().upper() or "TON"
+            elif name == "sku":
+                sku = (await part.text()).strip() or None
             elif name == "body_json":
                 body = json.loads(await part.text())
             elif name and name.startswith("file:"):
@@ -523,7 +611,7 @@ class SidecarApp:
                 file_path.write_bytes(file_data)
                 uploaded_files[field_name] = file_path
 
-        return tx_hash, nonce, capability, quote_id, rail, body, uploaded_files
+        return tx_hash, nonce, capability, quote_id, rail, sku, body, uploaded_files
 
     def _cleanup_expired_quotes(self) -> None:
         now = time.time()
@@ -537,10 +625,11 @@ class SidecarApp:
 
         try:
             if request.content_type and "multipart/form-data" in request.content_type:
-                _, _, capability, _, _, body, _ = await self._parse_multipart_invoke(request)
+                _, _, capability, _, _, sku_field, body, _ = await self._parse_multipart_invoke(request)
             else:
                 data = await request.json()
                 capability = str(data.get("capability", "")).strip()
+                sku_field = str(data.get("sku", "")).strip() or None
                 body = data.get("body", {})
         except Exception:
             return web.json_response({"error": "Invalid request"}, status=400)
@@ -551,13 +640,26 @@ class SidecarApp:
         if capability != self.settings.capability:
             return web.json_response({"error": "Unsupported capability"}, status=400)
 
+        sku, sku_err = self._resolve_sku(sku_field)
+        if sku_err is not None:
+            return sku_err
+        assert sku is not None
+
         missing = validate_body({"body": body}, self.args_schema)
         if missing:
             return web.json_response({"error": "Missing required fields", "missing": missing}, status=400)
 
+        # Pre-check stock before calling agent — cheap rejection path.
+        view = await self.stock.get_view(sku.sku_id)
+        if view.stock_left is not None and view.stock_left <= 0:
+            return web.json_response(
+                {"error": "out_of_stock", "sku": sku.sku_id}, status=409,
+            )
+
         quote_payload = {
             "mode": "quote",
             "capability": capability,
+            "sku": sku.sku_id,
             "body": body,
         }
 
@@ -568,7 +670,7 @@ class SidecarApp:
                 timeout_seconds=self.settings.sync_timeout,
                 env={"OWN_SIDECAR_ID": self.sidecar_id},
             )
-        except Exception as exc:
+        except Exception:
             logger.exception("Quote subprocess failed")
             return web.json_response({"error": "Quote generation failed"}, status=500)
 
@@ -580,18 +682,41 @@ class SidecarApp:
         if not isinstance(price, int) or price <= 0:
             return web.json_response({"error": "Agent returned invalid price"}, status=500)
 
+        price_usdt = agent_result.get("price_usdt")
+        if price_usdt is not None and (not isinstance(price_usdt, int) or price_usdt <= 0):
+            price_usdt = None
+
         self._cleanup_expired_quotes()
 
         quote_id = str(uuid.uuid4())
         expires_at = time.time() + ttl
-        self.quotes[quote_id] = QuoteEntry(price=price, expires_at=expires_at)
+
+        # Reserve stock for this quote. Use payment_timeout as TTL — user has
+        # that long to pay before the reservation is swept.
+        reserve_ttl = max(ttl, self.settings.payment_timeout)
+        try:
+            ok = await self.stock.reserve(sku.sku_id, quote_id, reserve_ttl)
+        except Exception:
+            logger.exception("stock.reserve failed during quote")
+            return web.json_response({"error": "Internal stock error"}, status=500)
+        if not ok:
+            return web.json_response(
+                {"error": "out_of_stock", "sku": sku.sku_id}, status=409,
+            )
+
+        self.quotes[quote_id] = QuoteEntry(
+            price=price, expires_at=expires_at, sku_id=sku.sku_id, price_usdt=price_usdt,
+        )
 
         resp: dict[str, Any] = {
             "quote_id": quote_id,
             "price": price,
             "plan": plan,
+            "sku": sku.sku_id,
             "expires_at": int(expires_at),
         }
+        if price_usdt:
+            resp["price_usdt"] = price_usdt
         if note:
             resp["note"] = note
 
@@ -605,11 +730,14 @@ class SidecarApp:
         # until then, any early return must clean them up so validation /
         # verification failures don't leak multipart uploads on disk.
         ownership_transferred = False
+        # Reservation keys we created in this request and must clean up on
+        # early failure paths (unless handed off to the runner).
+        created_reservation_keys: list[str] = []
 
         try:
             try:
                 if request.content_type and "multipart/form-data" in request.content_type:
-                    tx_hash, nonce, capability, quote_id, rail, body, uploaded_files = \
+                    tx_hash, nonce, capability, quote_id, rail, sku_field, body, uploaded_files = \
                         await self._parse_multipart_invoke(request)
                     payload = {"body": body}
                 else:
@@ -619,6 +747,7 @@ class SidecarApp:
                     capability = str(data.get("capability", "")).strip()
                     quote_id = str(data.get("quote_id", "")).strip() or None
                     rail = str(data.get("rail", "")).strip().upper() or "TON"
+                    sku_field = str(data.get("sku", "")).strip() or None
                     body = data.get("body", {})
                     payload = data
             except Exception:
@@ -630,9 +759,30 @@ class SidecarApp:
             if capability != self.settings.capability:
                 return web.json_response({"error": "Unsupported capability"}, status=400)
 
-            # Determine minimum payment amount (quoted or static)
-            min_amount = self.settings.agent_price
-            quote_entry = None
+            # Resolve SKU. Quote-bound calls derive SKU from the quote entry
+            # instead (user doesn't need to repeat it). Direct calls must
+            # either specify sku or rely on single-SKU default.
+            sku: AgentSku | None = None
+            quote_entry = self.quotes.get(quote_id) if quote_id else None
+            if quote_entry is not None:
+                sku = self._skus_by_id.get(quote_entry.sku_id)
+                if sku is None:
+                    return web.json_response({"error": "Quote references unknown SKU"}, status=500)
+            else:
+                sku, sku_err = self._resolve_sku(sku_field)
+                if sku_err is not None:
+                    return sku_err
+            assert sku is not None
+
+            # Reject requested rail if SKU doesn't support it.
+            if rail == "TON" and sku.price_ton is None:
+                return web.json_response({"error": "unsupported_rail_for_sku", "sku": sku.sku_id, "rail": rail}, status=400)
+            if rail == "USDT" and sku.price_usd is None:
+                return web.json_response({"error": "unsupported_rail_for_sku", "sku": sku.sku_id, "rail": rail}, status=400)
+
+            # Determine payment amounts (quoted or static per-SKU).
+            min_amount = sku.price_ton or 0
+            min_amount_usdt = sku.price_usd or 0
             if quote_id:
                 self._cleanup_expired_quotes()
                 quote_entry = self.quotes.get(quote_id)
@@ -641,33 +791,40 @@ class SidecarApp:
                 if quote_entry.locked and tx_hash:
                     return web.json_response({"error": "Quote is currently locked by another request"}, status=409)
                 min_amount = quote_entry.price
-
-            # Determine USDT price (quoted or static)
-            min_amount_usdt = self.settings.agent_price_usdt or 0
-            if quote_entry and hasattr(quote_entry, "price_usdt") and quote_entry.price_usdt:
-                min_amount_usdt = quote_entry.price_usdt
+                if quote_entry.price_usdt:
+                    min_amount_usdt = quote_entry.price_usdt
 
             # HTTP 402 Payment Required flow — return price before validating body,
             # so preflight pings always get 402 with real price (not 400 for missing fields)
             if not tx_hash:
+                # Preflight stock gate: if this SKU is tracked and sold out,
+                # don't bother issuing a payment option the user can't redeem.
+                view = await self.stock.get_view(sku.sku_id)
+                if view.stock_left is not None and view.stock_left <= 0:
+                    return web.json_response(
+                        {"error": "out_of_stock", "sku": sku.sku_id}, status=409,
+                    )
+
                 if not nonce or not nonce.endswith(f":{self.sidecar_id}"):
                     nonce = f"{uuid.uuid4().hex[:16]}:{self.sidecar_id}"
 
                 payment_options: list[dict[str, Any]] = []
-                if self.settings.agent_price:
+                if sku.price_ton:
                     payment_options.append({
                         "rail": "TON",
                         "address": self.settings.agent_wallet,
                         "amount": str(min_amount),
                         "memo": nonce,
+                        "sku": sku.sku_id,
                     })
-                if self.settings.agent_price_usdt and min_amount_usdt:
+                if sku.price_usd and min_amount_usdt:
                     usdt_master = USDT_MASTER_TESTNET if self.settings.testnet else USDT_MASTER_MAINNET
                     payment_options.append({
                         "rail": "USDT",
                         "address": self.settings.agent_wallet,
                         "amount": str(min_amount_usdt),
                         "memo": nonce,
+                        "sku": sku.sku_id,
                         "token": {
                             "symbol": "USDT",
                             "master": usdt_master,
@@ -682,7 +839,7 @@ class SidecarApp:
                 }
 
                 headers: dict[str, str] = {}
-                if self.settings.agent_price:
+                if sku.price_ton:
                     headers["x-ton-pay-address"] = self.settings.agent_wallet
                     headers["x-ton-pay-amount"] = str(min_amount)
                     headers["x-ton-pay-nonce"] = nonce
@@ -747,11 +904,45 @@ class SidecarApp:
                     self.quotes[quote_id].locked = False
                 return web.json_response({"error": "Failed to persist transaction"}, status=500)
 
+            # Resolve stock reservation. With a quote, reservation is already
+            # in place under quote_id. Without a quote, claim one now.
+            reservation_key: str | None = None
+            if quote_id:
+                reservation_key = quote_id
+            elif self.stock.has_tracked_stock(sku.sku_id):
+                reservation_key = verified_payment.tx_hash
+                try:
+                    reserved = await self.stock.reserve(
+                        sku.sku_id, reservation_key, self.settings.final_timeout,
+                    )
+                except Exception:
+                    logger.exception("stock.reserve (post-payment) failed")
+                    reserved = False
+                if not reserved:
+                    # Race lost between preflight and payment. Refund the user.
+                    try:
+                        await self.refund_user(
+                            recipient=verified_payment.sender,
+                            payment_amount=verified_payment.amount,
+                            original_tx_hash=verified_payment.tx_hash,
+                            reason="out_of_stock",
+                            rail=rail,
+                        )
+                    except Exception:
+                        logger.exception("Refund after out_of_stock race failed")
+                    return web.json_response(
+                        {"error": "out_of_stock", "sku": sku.sku_id, "refunded": True},
+                        status=409,
+                    )
+                created_reservation_keys.append(reservation_key)
+
             # Consume quote so it can't be reused
             if quote_id and quote_id in self.quotes:
                 del self.quotes[quote_id]
 
+            # Bind reservation to the job for lifecycle tracking.
             agent_body = dict(body)
+            agent_body["sku"] = sku.sku_id
             for field_name, file_path in uploaded_files.items():
                 agent_body[f"{field_name}_path"] = str(file_path)
                 if f"{field_name}_name" not in agent_body:
@@ -759,19 +950,36 @@ class SidecarApp:
 
             agent_payload = {
                 "capability": capability,
+                "sku": sku.sku_id,
                 "body": agent_body,
             }
 
-            # From here on, the runner owns uploaded_files: its finally block
-            # will rmtree them after the subprocess finishes (successfully or
-            # not). Stop the outer finally from double-deleting.
+            # From here on, the runner owns uploaded_files and the reservation:
+            # its finally/except blocks clean them up after the subprocess
+            # finishes. Stop the outer finally from double-cleanup.
             ownership_transferred = True
             job_id = await self.jobs.submit(
-                self._create_runner(agent_payload, verified_payment.sender, verified_payment.amount, tx_hash, uploaded_files, rail)
+                self._create_runner(
+                    agent_payload, verified_payment.sender, verified_payment.amount,
+                    tx_hash, uploaded_files, rail, reservation_key,
+                )
             )
+            if reservation_key:
+                try:
+                    await self.stock.attach_job(
+                        reservation_key, job_id, extend_ttl_seconds=self.settings.final_timeout,
+                    )
+                except Exception:
+                    logger.exception("attach_job failed")
         finally:
-            if not ownership_transferred and uploaded_files:
-                self._cleanup_uploaded_files(uploaded_files)
+            if not ownership_transferred:
+                if uploaded_files:
+                    self._cleanup_uploaded_files(uploaded_files)
+                for key in created_reservation_keys:
+                    try:
+                        await self.stock.release(key)
+                    except Exception:
+                        logger.exception("Failed to release reservation on early exit")
 
         record = await self.jobs.wait_for_completion(job_id, timeout_seconds=self.settings.sync_timeout)
 
@@ -779,15 +987,31 @@ class SidecarApp:
             return web.json_response({"job_id": job_id, "status": "pending"})
 
         if record.status == "done":
-            final_res, extract_err = self._safe_extract_result(record.result)
-            if extract_err:
-                return web.json_response({"job_id": job_id, "status": "error", "error": extract_err}, status=500)
-            return web.json_response({"job_id": job_id, "status": "done", "result": final_res})
+            return self._render_done_response(job_id, record.result)
 
         if record.status == "error":
             return web.json_response({"job_id": job_id, "status": "error", "error": record.error}, status=500)
 
         return web.json_response({"job_id": job_id, "status": "pending"})
+
+    def _render_done_response(self, job_id: str, record_result: Any) -> web.Response:
+        """Translate a done job's payload into HTTP response, recognizing out_of_stock."""
+        # Recognize runner-produced refund record without running it through
+        # _process_file_result (it's already a plain dict, not an agent result).
+        if isinstance(record_result, dict):
+            inner = record_result.get("result") if isinstance(record_result.get("result"), dict) else None
+            if isinstance(inner, dict) and inner.get("status") == "refunded_out_of_stock":
+                return web.json_response({
+                    "job_id": job_id,
+                    "status": "refunded_out_of_stock",
+                    "reason": inner.get("reason"),
+                    "refund_tx": inner.get("refund_tx"),
+                })
+
+        final_res, extract_err = self._safe_extract_result(record_result)
+        if extract_err:
+            return web.json_response({"job_id": job_id, "status": "error", "error": extract_err}, status=500)
+        return web.json_response({"job_id": job_id, "status": "done", "result": final_res})
 
     async def handle_result(self, request: web.Request) -> web.Response:
         from aiohttp import web
@@ -797,14 +1021,10 @@ class SidecarApp:
         if record is None:
             return web.json_response({"error": "Job not found"}, status=404)
 
+        if record.status == "done":
+            return self._render_done_response(job_id, record.result)
+
         response: dict[str, Any] = {"status": record.status}
-        if record.result is not None:
-            final_res, extract_err = self._safe_extract_result(record.result)
-            if extract_err:
-                response["status"] = "error"
-                response["error"] = extract_err
-            else:
-                response["result"] = final_res
         if record.error is not None:
             response["error"] = record.error
         return web.json_response(response)
@@ -835,11 +1055,7 @@ class SidecarApp:
     async def handle_info(self, _: web.Request) -> web.Response:
         from aiohttp import web
 
-        rails: list[str] = []
-        if self.settings.agent_price:
-            rails.append("TON")
-        if self.settings.agent_price_usdt:
-            rails.append("USDT")
+        rails = list(self.settings.payment_rails)
 
         info: dict[str, Any] = {
             "name": self.settings.agent_name,
@@ -849,10 +1065,50 @@ class SidecarApp:
             "args_schema": self.args_schema,
             "result_schema": self.result_schema,
             "sidecar_id": self.sidecar_id,
+            "endpoint": self.settings.agent_endpoint,
             "payment_rails": rails,
         }
+        if self.settings.has_quote:
+            info["has_quote"] = True
         if self.settings.agent_price_usdt:
             info["price_usdt"] = self.settings.agent_price_usdt
+
+        # Always emit skus[] so clients can drive per-SKU UI. Legacy single-SKU
+        # agents still see price/price_usdt top-level (populated from that SKU).
+        try:
+            views = await self.stock.list_views()
+        except Exception:
+            logger.exception("stock.list_views failed")
+            views = []
+        skus_payload: list[dict[str, Any]] = []
+        for v in views:
+            entry: dict[str, Any] = {
+                "id": v.sku_id,
+                "title": v.title,
+            }
+            if v.price_ton is not None:
+                entry["price_ton"] = v.price_ton
+            if v.price_usd is not None:
+                entry["price_usd"] = v.price_usd
+            if v.stock_left is not None:
+                entry["stock_left"] = v.stock_left
+            if v.total is not None:
+                entry["total"] = v.total
+                entry["sold"] = v.sold
+            skus_payload.append(entry)
+        if skus_payload:
+            info["skus"] = skus_payload
+
+        from heartbeat import _valid_image_url
+        if self.settings.agent_preview_url and _valid_image_url(self.settings.agent_preview_url):
+            info["preview_url"] = self.settings.agent_preview_url
+        if self.settings.agent_avatar_url and _valid_image_url(self.settings.agent_avatar_url):
+            info["avatar_url"] = self.settings.agent_avatar_url
+        if self.settings.agent_images:
+            from heartbeat import MAX_IMAGES
+            images = [img for img in self.settings.agent_images if _valid_image_url(img)]
+            if images:
+                info["images"] = images[:MAX_IMAGES]
         return web.json_response(info)
 
     def build_web_app(self) -> web.Application:
@@ -876,29 +1132,29 @@ class SidecarApp:
         async def rate_limit_middleware(request: web.Request, handler):
             if request.method == "OPTIONS" or request.path == "/info" or request.path.startswith("/download/"):
                 return await handler(request)
-                
+
             remote = request.remote or ""
             if remote and self.settings.trusted_proxy_ips and remote in self.settings.trusted_proxy_ips:
                 ip = (request.headers.get("X-Forwarded-For") or remote).split(",")[0].strip()
             else:
                 ip = remote or "unknown"
-                
+
             now = time.time()
             cutoff = now - self.settings.rate_limit_window
-            
+
             # Fast cleanup and check
             history = self.rate_limits.get(ip, [])
             history = [ts for ts in history if ts > cutoff]
-            
+
             if len(history) >= self.settings.rate_limit_requests:
                 return web.json_response({
-                    "error": "Too many requests", 
+                    "error": "Too many requests",
                     "retry_after": int(history[0] - cutoff)
                 }, status=429)
-                
+
             history.append(now)
             self.rate_limits[ip] = history
-                
+
             return await handler(request)
 
         max_upload_mb = int(os.environ.get("MAX_UPLOAD_SIZE_MB", "150"))

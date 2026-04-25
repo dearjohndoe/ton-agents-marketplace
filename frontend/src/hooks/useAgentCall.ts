@@ -1,13 +1,13 @@
 import { useState, useEffect, useRef } from 'react'
 import type { FormEvent } from 'react'
 import { Address, toNano } from '@ton/core'
-import { invokeAgent, pollResult, fetchQuote, invokePreflight, getConnectionMode, checkGatewayHealth } from '../lib/agentClient'
+import { invokeAgent, pollResult, fetchQuote, invokePreflight, getConnectionMode, checkGatewayHealth, fetchAgentInfo } from '../lib/agentClient'
 import type { QuoteResult, PaymentRequest, PaymentOption, ConnectionMode } from '../lib/agentClient'
 import { buildPaymentPayload, buildJettonTransferPayload, bocToMsgHash, resolveJettonWallet } from '../lib/crypto'
-import type { Agent } from '../types'
+import type { Agent, Sku } from '../types'
 import { TESTNET, TONCENTER_BASE } from '../config'
 
-export type CallStatus = 'idle' | 'quoting' | 'quoted' | 'paying' | 'invoking' | 'polling' | 'done' | 'error'
+export type CallStatus = 'idle' | 'quoting' | 'quoted' | 'paying' | 'invoking' | 'polling' | 'done' | 'error' | 'refunded_out_of_stock'
 
 export function useAgentCall(
   agent: Agent,
@@ -27,6 +27,11 @@ export function useAgentCall(
     agent.price > 0 ? 'TON' : agent.priceUsdt ? 'USDT' : 'TON'
   )
   const [connMode, setConnMode] = useState<ConnectionMode>(() => getConnectionMode(agent.endpoint))
+  const [skus, setSkus] = useState<Sku[]>([])
+  const [selectedSkuId, setSelectedSkuId] = useState<string>('')
+  const [skusLoading, setSkusLoading] = useState(false)
+  const [refundReason, setRefundReason] = useState('')
+  const [refundTx, setRefundTx] = useState('')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -36,6 +41,33 @@ export function useAgentCall(
       setConnMode(getConnectionMode(agent.endpoint))
     })
   }, [expanded, agent.endpoint])
+
+  const [infoRefreshNonce, setInfoRefreshNonce] = useState(0)
+  function refreshInfo() { setInfoRefreshNonce(n => n + 1) }
+
+  useEffect(() => {
+    if (!expanded) return
+    let cancelled = false
+    setSkusLoading(true)
+    fetchAgentInfo(agent.endpoint)
+      .then(info => {
+        if (cancelled) return
+        setSkus(info.skus)
+        // Default selection: first in-stock sku, falling back to first.
+        const firstAvail = info.skus.find(s => s.stockLeft == null || s.stockLeft > 0)
+        setSelectedSkuId(prev => prev || firstAvail?.id || info.skus[0]?.id || '')
+      })
+      .catch(() => { if (!cancelled) setSkus([]) })
+      .finally(() => { if (!cancelled) setSkusLoading(false) })
+    return () => { cancelled = true }
+  }, [expanded, agent.endpoint, infoRefreshNonce])
+
+  // Re-pull /info after a sale finalises so stock_left reflects the new state.
+  useEffect(() => {
+    if (status === 'done' || status === 'refunded_out_of_stock') refreshInfo()
+  }, [status])
+
+  const selectedSku: Sku | null = skus.find(s => s.id === selectedSkuId) ?? null
 
   useEffect(() => {
     return () => {
@@ -71,7 +103,7 @@ export function useAgentCall(
     setErrorMsg('')
     setQuote(null)
     try {
-      const q = await fetchQuote(agent.endpoint, agent.capabilities[0] ?? '', buildBody())
+      const q = await fetchQuote(agent.endpoint, agent.capabilities[0] ?? '', buildBody(), selectedSkuId || undefined)
       setQuote(q)
       if (q.plan && typeof q.plan === 'object' && 'quote_id' in q.plan) {
         const planQuoteId = (q.plan as { quote_id: string }).quote_id
@@ -96,7 +128,7 @@ export function useAgentCall(
     let preflightOptions: PaymentOption[] = []
 
     try {
-      const preflight = await invokePreflight(agent.endpoint, agent.capabilities[0] ?? '', body, quote?.quoteId)
+      const preflight = await invokePreflight(agent.endpoint, agent.capabilities[0] ?? '', body, quote?.quoteId, selectedSkuId || undefined)
       paymentRequest = preflight.paymentRequest
       preflightOptions = preflight.paymentOptions
       setPaymentOptions(preflightOptions)
@@ -109,7 +141,12 @@ export function useAgentCall(
       }
     } catch (err: any) {
       setStatus('error')
-      setErrorMsg(err?.message ?? 'Failed to reach agent')
+      const data = err?.response?.data
+      if (err?.response?.status === 409 && data?.error === 'out_of_stock') {
+        setErrorMsg(`Out of stock${data.sku ? ` (${data.sku})` : ''}`)
+      } else {
+        setErrorMsg(err?.message ?? 'Failed to reach agent')
+      }
       return
     }
 
@@ -158,10 +195,14 @@ export function useAgentCall(
 
     setStatus('invoking')
     try {
-      const res = await invokeAgent(agent.endpoint, txBoc, paymentRequest.nonce, agent.capabilities[0] ?? '', body, quote?.quoteId, fileFields, rail)
+      const res = await invokeAgent(agent.endpoint, txBoc, paymentRequest.nonce, agent.capabilities[0] ?? '', body, quote?.quoteId, fileFields, rail, selectedSkuId || undefined)
 
       if (res.status === 'done') {
         setResult(res.result); setStatus('done')
+      } else if (res.status === 'refunded_out_of_stock') {
+        setRefundReason(res.reason ?? '')
+        setRefundTx(res.refundTx ?? '')
+        setStatus('refunded_out_of_stock')
       } else if (res.status === 'error') {
         setStatus('error'); setErrorMsg(res.error ?? 'Agent returned an error')
       } else {
@@ -172,6 +213,11 @@ export function useAgentCall(
             if (r.status !== 'pending') {
               clearInterval(pollRef.current!)
               if (r.status === 'done') { setResult(r.result); setStatus('done') }
+              else if (r.status === 'refunded_out_of_stock') {
+                setRefundReason(r.reason ?? '')
+                setRefundTx(r.refundTx ?? '')
+                setStatus('refunded_out_of_stock')
+              }
               else { setStatus('error'); setErrorMsg(r.error ?? 'Error') }
             }
           } catch { clearInterval(pollRef.current!); setStatus('error'); setErrorMsg('Connection lost') }
@@ -192,6 +238,8 @@ export function useAgentCall(
     setQuote(null)
     setLastNonce('')
     setPaymentOptions([])
+    setRefundReason('')
+    setRefundTx('')
   }
 
   function resetQuote() {
@@ -206,6 +254,8 @@ export function useAgentCall(
     quote, quoteSecondsLeft,
     lastNonce, connMode,
     paymentOptions, selectedRail, setSelectedRail,
+    skus, skusLoading, selectedSkuId, setSelectedSkuId, selectedSku,
+    refundReason, refundTx,
     busy, hasSchema,
     handleGetQuote, handleSubmit, reset, resetQuote,
   }

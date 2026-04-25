@@ -501,6 +501,70 @@ body {
   opacity: 0.4; cursor: not-allowed;
 }
 
+/* ── SKU selector ── */
+.sku-selector {
+  display: flex; flex-direction: column; gap: 6px;
+  margin-bottom: 4px;
+}
+.sku-list {
+  display: flex; flex-direction: column; gap: 6px;
+}
+.sku-item {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  text-align: left;
+  transition: all 0.15s;
+}
+.sku-item:hover:not(:disabled) { background: var(--surface-2); }
+.sku-item--active {
+  border-color: var(--primary);
+  background: var(--surface-3);
+}
+.sku-item--sold-out {
+  opacity: 0.45; cursor: not-allowed;
+}
+.sku-title { font-weight: 500; color: var(--text); }
+.sku-price { font-size: 11px; }
+.sku-stock {
+  font-size: 11px; color: var(--text-muted);
+  letter-spacing: 0.3px;
+}
+.sku-item--active .sku-stock { color: var(--text); }
+
+/* ── Stock badge (single SKU) ── */
+.stock-badge {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.3px;
+  padding: 4px 0;
+}
+
+/* ── Refunded out-of-stock block ── */
+.result-box--refund {
+  border-color: rgba(234, 179, 8, 0.35);
+}
+.refund-reason {
+  margin: 6px 0;
+  font-size: 13px;
+  color: var(--text);
+}
+.refund-tx {
+  margin: 6px 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 /* ── Price badges (row) ── */
 .price-usdt {
   color: var(--primary);

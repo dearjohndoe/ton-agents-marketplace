@@ -6,10 +6,22 @@ import './index.css'
 
 const manifestUrl = `https://dearjohndoe.github.io/ton-agents-marketplace/tonconnect-manifest.json`
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <TonConnectUIProvider manifestUrl={manifestUrl}>
-      <App />
-    </TonConnectUIProvider>
-  </React.StrictMode>
-)
+async function bootstrap() {
+  if (import.meta.env.VITE_USE_MOCK === 'true') {
+    const { worker } = await import('./mocks/browser')
+    await worker.start({
+      onUnhandledRequest: 'bypass',
+      serviceWorker: { url: `${import.meta.env.BASE_URL}mockServiceWorker.js` },
+    })
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')!).render(
+    <React.StrictMode>
+      <TonConnectUIProvider manifestUrl={manifestUrl}>
+        <App />
+      </TonConnectUIProvider>
+    </React.StrictMode>
+  )
+}
+
+bootstrap()
