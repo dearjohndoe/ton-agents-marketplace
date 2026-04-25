@@ -29,6 +29,10 @@ class AgentInfo:
     args_schema: dict[str, Any] = field(default_factory=dict)
     result_schema: dict[str, Any] = field(default_factory=dict)
     alive: bool = False
+    price_usdt: int = 0
+    preview_url: str | None = None
+    avatar_url: str | None = None
+    images: tuple[str, ...] = field(default_factory=tuple)
 
 
 def _parse_heartbeat_body(body_b64: str) -> dict[str, Any] | None:
@@ -67,6 +71,8 @@ def _parse_tx(tx: dict[str, Any]) -> AgentInfo | None:
         caps = payload.get("capabilities") or ([payload["capability"]] if payload.get("capability") else [])
         capability = caps[0] if caps else ""
 
+        raw_images = payload.get("images") or []
+        images: tuple[str, ...] = tuple(raw_images) if isinstance(raw_images, list) else ()
         return AgentInfo(
             sidecar_id=payload["sidecar_id"],
             name=payload.get("name", ""),
@@ -78,6 +84,10 @@ def _parse_tx(tx: dict[str, Any]) -> AgentInfo | None:
             address=msg.get("source", ""),
             args_schema=payload.get("args_schema") or {},
             result_schema=payload.get("result_schema") or {},
+            price_usdt=int(payload.get("price_usdt", 0)),
+            preview_url=payload.get("preview_url") or None,
+            avatar_url=payload.get("avatar_url") or None,
+            images=images,
         )
     except Exception:
         return None
