@@ -19,19 +19,32 @@ from aiohttp.test_utils import TestClient, TestServer
 
 import api as api_module
 from api import QuoteEntry, SidecarApp, fetch_describe, validate_body
-from settings import Settings
+from settings import AgentSku, DEFAULT_SKU_ID, Settings
 from verify import PaymentVerificationError, VerifiedPayment
 
 
 # ── Settings factory ───────────────────────────────────────────────────
 
 def make_settings(tmp_path: Path, **overrides) -> Settings:
+    agent_price = overrides.get("agent_price", 1_000_000)
+    agent_price_usdt = overrides.get("agent_price_usdt", None)
+    default_sku = AgentSku(
+        sku_id=DEFAULT_SKU_ID, title=DEFAULT_SKU_ID,
+        price_ton=agent_price if agent_price else None,
+        price_usd=agent_price_usdt,
+        initial_stock=None,
+    )
+    rails: list[str] = []
+    if default_sku.price_ton is not None:
+        rails.append("TON")
+    if default_sku.price_usd is not None:
+        rails.append("USDT")
     base = dict(
         agent_command="true",
         capability="translate",
         agent_name="Translator",
         agent_description="Translates text",
-        agent_price=1_000_000,
+        agent_price=agent_price,
         agent_endpoint="https://agent.test",
         agent_wallet_pk="a" * 64,
         agent_wallet_seed=None,
@@ -45,15 +58,22 @@ def make_settings(tmp_path: Path, **overrides) -> Settings:
         testnet=True,
         state_path=str(tmp_path / "state.json"),
         tx_db_path=str(tmp_path / "tx.db"),
+        stock_db_path=str(tmp_path / "stock.db"),
         enforce_comment_nonce=True,
         refund_fee_nanoton=500_000,
-        agent_price_usdt=None,
+        agent_price_usdt=agent_price_usdt,
         has_quote=False,
         rate_limit_requests=3,
         rate_limit_window=10,
         trusted_proxy_ips=frozenset(),
         file_store_dir=str(tmp_path / "file_store"),
         file_store_ttl=60,
+        images_dir=str(tmp_path / "images"),
+        agent_preview_url=None,
+        agent_avatar_url=None,
+        agent_images=(),
+        skus=(default_sku,),
+        payment_rails=tuple(rails),
     )
     base.update(overrides)
     return Settings(**base)
@@ -337,8 +357,8 @@ async def test_refund_user_swallows_sender_exception(app_factory):
 
 def test_cleanup_expired_quotes_removes_expired(app_factory):
     app = app_factory()
-    app.quotes["old"] = QuoteEntry(price=100, expires_at=time.time() - 1)
-    app.quotes["new"] = QuoteEntry(price=200, expires_at=time.time() + 60)
+    app.quotes["old"] = QuoteEntry(price=100, expires_at=time.time() - 1, sku_id=DEFAULT_SKU_ID)
+    app.quotes["new"] = QuoteEntry(price=200, expires_at=time.time() + 60, sku_id=DEFAULT_SKU_ID)
     app._cleanup_expired_quotes()
     assert "old" not in app.quotes
     assert "new" in app.quotes
@@ -357,9 +377,10 @@ async def client(app_factory, tmp_path):
 
     async def noop_startup():
         app._file_store_dir.mkdir(parents=True, exist_ok=True)
+        await app.stock.init(app.settings.skus)
 
     async def noop_shutdown():
-        pass
+        await app.stock.close()
 
     app.startup = noop_startup
     app.shutdown = noop_shutdown
@@ -683,14 +704,18 @@ async def test_handle_quote_enabled_returns_quote(app_factory, monkeypatch):
 
     async def noop():
         app._file_store_dir.mkdir(parents=True, exist_ok=True)
+        await app.stock.init(app.settings.skus)
+
+    async def noop_shutdown():
+        await app.stock.close()
 
     app.startup = noop  # type: ignore[method-assign]
-    app.shutdown = noop  # type: ignore[method-assign]
+    app.shutdown = noop_shutdown  # type: ignore[method-assign]
     web_app = app.build_web_app()
     web_app.on_startup.clear()
     web_app.on_shutdown.clear()
     web_app.on_startup.append(lambda _: noop())
-    web_app.on_shutdown.append(lambda _: noop())
+    web_app.on_shutdown.append(lambda _: noop_shutdown())
 
     async def fake_run(**kwargs):
         return {"price": 7_777, "plan": "cheap", "ttl": 30}
@@ -713,14 +738,18 @@ async def test_handle_quote_invalid_price_returns_500(app_factory, monkeypatch):
 
     async def noop():
         app._file_store_dir.mkdir(parents=True, exist_ok=True)
+        await app.stock.init(app.settings.skus)
+
+    async def noop_shutdown():
+        await app.stock.close()
 
     app.startup = noop  # type: ignore[method-assign]
-    app.shutdown = noop  # type: ignore[method-assign]
+    app.shutdown = noop_shutdown  # type: ignore[method-assign]
     web_app = app.build_web_app()
     web_app.on_startup.clear()
     web_app.on_shutdown.clear()
     web_app.on_startup.append(lambda _: noop())
-    web_app.on_shutdown.append(lambda _: noop())
+    web_app.on_shutdown.append(lambda _: noop_shutdown())
 
     async def fake_run(**kwargs):
         return {"price": -1, "plan": ""}
@@ -738,14 +767,18 @@ async def test_handle_quote_missing_required_body_returns_400(app_factory):
 
     async def noop():
         app._file_store_dir.mkdir(parents=True, exist_ok=True)
+        await app.stock.init(app.settings.skus)
+
+    async def noop_shutdown():
+        await app.stock.close()
 
     app.startup = noop  # type: ignore[method-assign]
-    app.shutdown = noop  # type: ignore[method-assign]
+    app.shutdown = noop_shutdown  # type: ignore[method-assign]
     web_app = app.build_web_app()
     web_app.on_startup.clear()
     web_app.on_shutdown.clear()
     web_app.on_startup.append(lambda _: noop())
-    web_app.on_shutdown.append(lambda _: noop())
+    web_app.on_shutdown.append(lambda _: noop_shutdown())
 
     async with TestClient(TestServer(web_app)) as c:
         resp = await c.post("/quote", json={"capability": "translate", "body": {}})
@@ -831,3 +864,178 @@ async def test_invoke_multipart_with_file_upload_happy_path(client, monkeypatch)
     # Agent was called with the file path injected into the body.
     assert "image_path" in captured_payload.get("body", {})
     assert captured_payload["body"]["image_name"] == "pic.png"
+
+
+# ── Stock / SKU integration ────────────────────────────────────────────
+
+async def _stock_client(app_factory, tmp_path, initial_stock: int = 1):
+    """Build a TestClient for an app whose default SKU has a tracked stock."""
+    from settings import AgentSku, DEFAULT_SKU_ID
+    sku = AgentSku(
+        sku_id=DEFAULT_SKU_ID, title=DEFAULT_SKU_ID,
+        price_ton=1_000_000, price_usd=None, initial_stock=initial_stock,
+    )
+    app = app_factory(skus=(sku,), payment_rails=("TON",))
+    app.args_schema = {"text": {"type": "string", "required": True}}
+
+    async def noop_startup():
+        app._file_store_dir.mkdir(parents=True, exist_ok=True)
+        await app.stock.init(app.settings.skus)
+
+    async def noop_shutdown():
+        await app.stock.close()
+
+    app.startup = noop_startup  # type: ignore[method-assign]
+    app.shutdown = noop_shutdown  # type: ignore[method-assign]
+    web_app = app.build_web_app()
+    web_app.on_startup.clear()
+    web_app.on_shutdown.clear()
+    web_app.on_startup.append(lambda _: noop_startup())
+    web_app.on_shutdown.append(lambda _: noop_shutdown())
+    return app, TestClient(TestServer(web_app))
+
+
+async def test_invoke_preflight_returns_409_when_out_of_stock(app_factory, tmp_path):
+    app, tc = await _stock_client(app_factory, tmp_path, initial_stock=0)
+    async with tc as c:
+        resp = await c.post("/invoke", json={"capability": "translate"})
+        assert resp.status == 409
+        data = await resp.json()
+        assert data["error"] == "out_of_stock"
+
+
+async def test_invoke_with_tracked_stock_reserves_and_commits_on_success(app_factory, tmp_path, monkeypatch):
+    app, tc = await _stock_client(app_factory, tmp_path, initial_stock=2)
+    async with tc as c:
+        app.tx_store.is_processed = AsyncMock(return_value=False)
+        app.tx_store.mark_processed = AsyncMock()
+        app.verifier.verify = AsyncMock(return_value=VerifiedPayment(
+            tx_hash="real-hash", sender="EQsender", recipient="EQagent",
+            amount=1_000_000, comment="n:sid-test",
+        ))
+
+        async def fake_run(**kwargs):
+            return {"result": {"type": "text", "data": "ok"}}
+
+        monkeypatch.setattr(api_module, "run_agent_subprocess", fake_run)
+
+        resp = await c.post("/invoke", json={
+            "capability": "translate", "tx": "u", "nonce": "n:sid-test",
+            "body": {"text": "hi"},
+        })
+        assert resp.status == 200
+        view = await app.stock.get_view("default")
+        assert view.sold == 1
+        assert view.reserved == 0
+        assert view.stock_left == 1
+
+
+async def test_invoke_out_of_stock_from_agent_refunds_and_reports(app_factory, tmp_path, monkeypatch):
+    app, tc = await _stock_client(app_factory, tmp_path, initial_stock=1)
+    async with tc as c:
+        app.tx_store.is_processed = AsyncMock(return_value=False)
+        app.tx_store.mark_processed = AsyncMock()
+        app.verifier.verify = AsyncMock(return_value=VerifiedPayment(
+            tx_hash="real-hash", sender="EQsender", recipient="EQagent",
+            amount=1_000_000, comment="n:sid-test",
+        ))
+        app.sender.send = AsyncMock(return_value="REFUND_HASH")
+
+        async def fake_run(**kwargs):
+            return {"error": "out_of_stock", "reason": "banned before delivery"}
+
+        monkeypatch.setattr(api_module, "run_agent_subprocess", fake_run)
+
+        resp = await c.post("/invoke", json={
+            "capability": "translate", "tx": "u", "nonce": "n:sid-test",
+            "body": {"text": "hi"},
+        })
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["status"] == "refunded_out_of_stock"
+        assert data["reason"] == "banned before delivery"
+        assert data["refund_tx"] == "REFUND_HASH"
+
+        view = await app.stock.get_view("default")
+        # Agent reported unit is gone → total decremented.
+        assert view.total == 0
+        assert view.sold == 0
+        assert view.reserved == 0
+
+
+async def test_invoke_agent_failure_releases_reservation(app_factory, tmp_path, monkeypatch):
+    app, tc = await _stock_client(app_factory, tmp_path, initial_stock=3)
+    async with tc as c:
+        app.tx_store.is_processed = AsyncMock(return_value=False)
+        app.tx_store.mark_processed = AsyncMock()
+        app.verifier.verify = AsyncMock(return_value=VerifiedPayment(
+            tx_hash="real-hash", sender="EQsender", recipient="EQagent",
+            amount=1_000_000, comment="n:sid-test",
+        ))
+        app.sender.send = AsyncMock(return_value="REFUND_HASH")
+
+        async def fake_run(**kwargs):
+            raise RuntimeError("agent died")
+
+        monkeypatch.setattr(api_module, "run_agent_subprocess", fake_run)
+
+        resp = await c.post("/invoke", json={
+            "capability": "translate", "tx": "u", "nonce": "n:sid-test",
+            "body": {"text": "hi"},
+        })
+        assert resp.status == 500
+        await asyncio.sleep(0.05)
+        view = await app.stock.get_view("default")
+        # Stock untouched — total still 3, nothing reserved or sold.
+        assert view.total == 3
+        assert view.sold == 0
+        assert view.reserved == 0
+
+
+async def test_info_reports_skus(app_factory, tmp_path):
+    app, tc = await _stock_client(app_factory, tmp_path, initial_stock=5)
+    async with tc as c:
+        resp = await c.get("/info")
+        assert resp.status == 200
+        data = await resp.json()
+        assert "skus" in data
+        assert len(data["skus"]) == 1
+        entry = data["skus"][0]
+        assert entry["id"] == "default"
+        assert entry["price_ton"] == 1_000_000
+        assert entry["stock_left"] == 5
+        assert entry["total"] == 5
+        assert entry["sold"] == 0
+
+
+async def test_invoke_unknown_sku_returns_400(app_factory, tmp_path):
+    from settings import AgentSku
+    skus = (
+        AgentSku(sku_id="a", title="A", price_ton=1_000_000, price_usd=None, initial_stock=None),
+        AgentSku(sku_id="b", title="B", price_ton=2_000_000, price_usd=None, initial_stock=None),
+    )
+    app = app_factory(skus=skus, payment_rails=("TON",))
+    app.args_schema = {"text": {"type": "string", "required": True}}
+
+    async def noop_startup():
+        app._file_store_dir.mkdir(parents=True, exist_ok=True)
+        await app.stock.init(app.settings.skus)
+
+    async def noop_shutdown():
+        await app.stock.close()
+
+    app.startup = noop_startup  # type: ignore[method-assign]
+    app.shutdown = noop_shutdown  # type: ignore[method-assign]
+    web_app = app.build_web_app()
+    web_app.on_startup.clear()
+    web_app.on_shutdown.clear()
+    web_app.on_startup.append(lambda _: noop_startup())
+    web_app.on_shutdown.append(lambda _: noop_shutdown())
+
+    async with TestClient(TestServer(web_app)) as c:
+        # Missing sku field with multiple SKUs configured → 400.
+        resp = await c.post("/invoke", json={"capability": "translate"})
+        assert resp.status == 400
+        # Unknown sku → 400.
+        resp = await c.post("/invoke", json={"capability": "translate", "sku": "ghost"})
+        assert resp.status == 400

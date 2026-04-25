@@ -2,6 +2,18 @@ import os
 from dataclasses import dataclass
 
 
+DEFAULT_SKU_ID = "default"
+
+
+@dataclass(frozen=True)
+class AgentSku:
+    sku_id: str
+    title: str
+    price_ton: int | None   # nanoton, None if TON rail not supported
+    price_usd: int | None   # micro-USD, None if USDT rail not supported
+    initial_stock: int | None  # None => infinite (no stock tracking)
+
+
 @dataclass
 class Settings:
     agent_command: str
@@ -22,6 +34,7 @@ class Settings:
     testnet: bool
     state_path: str
     tx_db_path: str
+    stock_db_path: str
     enforce_comment_nonce: bool
     refund_fee_nanoton: int
     agent_price_usdt: int | None
@@ -35,6 +48,8 @@ class Settings:
     agent_preview_url: str | None
     agent_avatar_url: str | None
     agent_images: tuple[str, ...]
+    skus: tuple[AgentSku, ...]
+    payment_rails: tuple[str, ...]
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -57,6 +72,130 @@ def _derive_wallet_address(pk_hex: str, testnet: bool) -> str:
     )
 
 
+def _parse_sku_prices(price_spec: list[str], sku_id: str) -> tuple[int | None, int | None]:
+    """Parse price tokens like ['ton=1000000000', 'usd=1500000']. At least one required."""
+    price_ton: int | None = None
+    price_usd: int | None = None
+    for token in price_spec:
+        token = token.strip()
+        if not token:
+            continue
+        if "=" not in token:
+            raise RuntimeError(f"SKU '{sku_id}': invalid price token '{token}' (expected ton=<n> or usd=<n>)")
+        key, _, val = token.partition("=")
+        key = key.strip().lower()
+        val = val.strip()
+        if not val:
+            raise RuntimeError(f"SKU '{sku_id}': empty value for '{key}'")
+        try:
+            ival = int(val)
+        except ValueError:
+            raise RuntimeError(f"SKU '{sku_id}': '{key}' must be integer, got '{val}'")
+        if ival <= 0:
+            raise RuntimeError(f"SKU '{sku_id}': '{key}' must be positive")
+        if key == "ton":
+            price_ton = ival
+        elif key == "usd":
+            price_usd = ival
+        else:
+            raise RuntimeError(f"SKU '{sku_id}': unknown price key '{key}' (use ton or usd)")
+
+    if price_ton is None and price_usd is None:
+        raise RuntimeError(f"SKU '{sku_id}': at least one of ton/usd price required")
+
+    return price_ton, price_usd
+
+
+def _parse_sku_titles(raw: str) -> dict[str, str]:
+    """Parse AGENT_SKU_TITLES='basic=Basic account,premium=Premium lvl 50'."""
+    result: dict[str, str] = {}
+    if not raw:
+        return result
+    for chunk in raw.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if "=" not in chunk:
+            continue
+        sku_id, _, title = chunk.partition("=")
+        sku_id = sku_id.strip()
+        title = title.strip()
+        if sku_id and title:
+            result[sku_id] = title
+    return result
+
+
+def _parse_skus(raw_skus: str, raw_titles: str) -> tuple[AgentSku, ...]:
+    """Parse AGENT_SKUS. Format: 'sku:stock:ton=N:usd=M,sku2:stock:ton=N'."""
+    titles = _parse_sku_titles(raw_titles)
+    skus: list[AgentSku] = []
+    seen: set[str] = set()
+
+    for entry in raw_skus.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        parts = entry.split(":")
+        if len(parts) < 3:
+            raise RuntimeError(f"Invalid SKU entry '{entry}' (need sku:stock:price_spec)")
+        sku_id = parts[0].strip()
+        if not sku_id:
+            raise RuntimeError(f"Invalid SKU entry '{entry}': empty id")
+        if sku_id in seen:
+            raise RuntimeError(f"Duplicate SKU id '{sku_id}'")
+        seen.add(sku_id)
+
+        stock_raw = parts[1].strip().lower()
+        if stock_raw in {"", "infinite", "inf", "none"}:
+            initial_stock: int | None = None
+        else:
+            try:
+                initial_stock = int(stock_raw)
+            except ValueError:
+                raise RuntimeError(f"SKU '{sku_id}': invalid stock '{stock_raw}'")
+            if initial_stock < 0:
+                raise RuntimeError(f"SKU '{sku_id}': stock must be >= 0")
+
+        price_ton, price_usd = _parse_sku_prices(parts[2:], sku_id)
+        title = titles.get(sku_id) or sku_id
+        skus.append(AgentSku(
+            sku_id=sku_id, title=title,
+            price_ton=price_ton, price_usd=price_usd,
+            initial_stock=initial_stock,
+        ))
+
+    if not skus:
+        raise RuntimeError("AGENT_SKUS is set but no valid SKU entries parsed")
+
+    # All SKUs must share the same rail set
+    rail_sets = {tuple(sorted([r for r, v in (("TON", s.price_ton), ("USD", s.price_usd)) if v is not None])) for s in skus}
+    if len(rail_sets) > 1:
+        raise RuntimeError(f"inconsistent_sku_rails: all SKUs must support the same set of rails, got {rail_sets}")
+
+    return tuple(skus)
+
+
+def _synthesize_default_sku(agent_price: int, agent_price_usdt: int | None, stock_raw: str | None) -> AgentSku:
+    """Build a single default SKU from legacy AGENT_PRICE/AGENT_PRICE_USD/AGENT_STOCK."""
+    price_ton = agent_price if agent_price > 0 else None
+    price_usd = agent_price_usdt if agent_price_usdt else None
+
+    initial_stock: int | None = None
+    if stock_raw is not None and stock_raw.strip().lower() not in {"", "infinite", "inf", "none"}:
+        try:
+            initial_stock = int(stock_raw)
+        except ValueError:
+            raise RuntimeError(f"AGENT_STOCK: invalid value '{stock_raw}'")
+        if initial_stock < 0:
+            raise RuntimeError("AGENT_STOCK must be >= 0")
+
+    return AgentSku(
+        sku_id=DEFAULT_SKU_ID, title=DEFAULT_SKU_ID,
+        price_ton=price_ton, price_usd=price_usd,
+        initial_stock=initial_stock,
+    )
+
+
 def load_settings(env_file: str | None = None) -> Settings:
     from dotenv import load_dotenv
 
@@ -75,18 +214,39 @@ def load_settings(env_file: str | None = None) -> Settings:
     if missing:
         raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
 
-    if not os.getenv("AGENT_PRICE") and not os.getenv("AGENT_PRICE_USD"):
-        raise RuntimeError("At least one of AGENT_PRICE or AGENT_PRICE_USD must be set")
+    if not os.getenv("AGENT_PRICE") and not os.getenv("AGENT_PRICE_USD") and not os.getenv("AGENT_SKUS"):
+        raise RuntimeError("At least one of AGENT_PRICE, AGENT_PRICE_USD, or AGENT_SKUS must be set")
 
     agent_wallet_pk = os.environ["AGENT_WALLET_PK"]
     testnet = _env_bool("TESTNET", False)
+
+    agent_price = int(os.getenv("AGENT_PRICE", "0"))
+    agent_price_usdt = int(os.environ["AGENT_PRICE_USD"]) if os.getenv("AGENT_PRICE_USD") else None
+
+    raw_skus = os.getenv("AGENT_SKUS", "").strip()
+    if raw_skus:
+        skus = _parse_skus(raw_skus, os.getenv("AGENT_SKU_TITLES", ""))
+        # Override agent_price/usdt with first SKU for heartbeat legacy
+        first = skus[0]
+        if first.price_ton is not None:
+            agent_price = first.price_ton
+        if first.price_usd is not None:
+            agent_price_usdt = first.price_usd
+    else:
+        skus = (_synthesize_default_sku(agent_price, agent_price_usdt, os.getenv("AGENT_STOCK")),)
+
+    rails: list[str] = []
+    if skus[0].price_ton is not None:
+        rails.append("TON")
+    if skus[0].price_usd is not None:
+        rails.append("USDT")
 
     return Settings(
         agent_command=os.environ["AGENT_COMMAND"],
         capability=os.environ["AGENT_CAPABILITY"],
         agent_name=os.environ["AGENT_NAME"],
         agent_description=os.environ["AGENT_DESCRIPTION"],
-        agent_price=int(os.getenv("AGENT_PRICE", "0")),
+        agent_price=agent_price,
         agent_endpoint=os.environ["AGENT_ENDPOINT"],
         agent_wallet=_derive_wallet_address(agent_wallet_pk, testnet),
         agent_wallet_pk=agent_wallet_pk,
@@ -100,9 +260,10 @@ def load_settings(env_file: str | None = None) -> Settings:
         testnet=testnet,
         state_path=os.getenv("SIDECAR_STATE_PATH", ".sidecar_state.json"),
         tx_db_path=os.getenv("SIDECAR_TX_DB_PATH", "processed_txs.db"),
+        stock_db_path=os.getenv("SIDECAR_STOCK_DB_PATH", "stock.db"),
         enforce_comment_nonce=_env_bool("ENFORCE_COMMENT_NONCE", True),
         refund_fee_nanoton=int(os.getenv("REFUND_FEE_NANOTON", "500000")),
-        agent_price_usdt=int(os.environ["AGENT_PRICE_USD"]) if os.getenv("AGENT_PRICE_USD") else None,
+        agent_price_usdt=agent_price_usdt,
         has_quote=_env_bool("AGENT_HAS_QUOTE", False),
         rate_limit_requests=int(os.getenv("RATE_LIMIT_REQUESTS", "60")),
         rate_limit_window=int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60")),
@@ -117,4 +278,6 @@ def load_settings(env_file: str | None = None) -> Settings:
         agent_images=tuple(
             u.strip() for u in os.getenv("AGENT_IMAGES", "").split(",") if u.strip()
         ),
+        skus=skus,
+        payment_rails=tuple(rails),
     )

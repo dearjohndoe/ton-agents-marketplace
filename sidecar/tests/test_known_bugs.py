@@ -27,7 +27,7 @@ from aiohttp.test_utils import TestClient, TestServer
 import api as api_module
 import transfer as transfer_module
 from api import SidecarApp
-from settings import Settings
+from settings import AgentSku, DEFAULT_SKU_ID, Settings
 from transfer import TransferSender
 from verify import PaymentVerificationError, ProcessedTxStore, VerifiedPayment
 
@@ -35,12 +35,25 @@ from verify import PaymentVerificationError, ProcessedTxStore, VerifiedPayment
 # ── Shared settings/app builders (subset of test_api.py) ───────────────
 
 def _make_settings(tmp_path: Path, **overrides) -> Settings:
+    agent_price = overrides.get("agent_price", 1_000_000)
+    agent_price_usdt = overrides.get("agent_price_usdt", None)
+    default_sku = AgentSku(
+        sku_id=DEFAULT_SKU_ID, title=DEFAULT_SKU_ID,
+        price_ton=agent_price if agent_price else None,
+        price_usd=agent_price_usdt,
+        initial_stock=None,
+    )
+    rails: list[str] = []
+    if default_sku.price_ton is not None:
+        rails.append("TON")
+    if default_sku.price_usd is not None:
+        rails.append("USDT")
     base = dict(
         agent_command="true",
         capability="translate",
         agent_name="Translator",
         agent_description="Translates text",
-        agent_price=1_000_000,
+        agent_price=agent_price,
         agent_endpoint="https://agent.test",
         agent_wallet_pk="a" * 64,
         agent_wallet_seed=None,
@@ -54,15 +67,22 @@ def _make_settings(tmp_path: Path, **overrides) -> Settings:
         testnet=True,
         state_path=str(tmp_path / "state.json"),
         tx_db_path=str(tmp_path / "tx.db"),
+        stock_db_path=str(tmp_path / "stock.db"),
         enforce_comment_nonce=True,
         refund_fee_nanoton=500_000,
-        agent_price_usdt=None,
+        agent_price_usdt=agent_price_usdt,
         has_quote=False,
         rate_limit_requests=3,
         rate_limit_window=1,  # short window so eviction test runs fast
         trusted_proxy_ips=frozenset(),
         file_store_dir=str(tmp_path / "file_store"),
         file_store_ttl=60,
+        images_dir=str(tmp_path / "images"),
+        agent_preview_url=None,
+        agent_avatar_url=None,
+        agent_images=(),
+        skus=(default_sku,),
+        payment_rails=tuple(rails),
     )
     base.update(overrides)
     return Settings(**base)
