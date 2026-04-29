@@ -262,3 +262,33 @@ def test_load_settings_legacy_infinite_stock_when_unset(clean_env, monkeypatch):
     _apply_required(monkeypatch)
     s = load_settings(env_file="/nonexistent/.env")
     assert s.skus[0].initial_stock is None
+
+
+def test_load_settings_skus_zero_price_single_rail_allowed(clean_env, monkeypatch):
+    """price=0 on one rail is valid — means that rail has no static price."""
+    _apply_required(monkeypatch)
+    monkeypatch.setenv("AGENT_SKUS", "basic:infinite:ton=0:usd=1000000")
+    s = load_settings(env_file="/nonexistent/.env")
+    assert s.skus[0].price_ton == 0
+    assert s.skus[0].price_usd == 1_000_000
+
+
+def test_load_settings_skus_zero_both_rails_is_dynamic_sentinel(clean_env, monkeypatch):
+    """Both prices = 0 signals dynamic pricing — agent provides prices at runtime."""
+    _apply_required(monkeypatch)
+    monkeypatch.setenv(
+        "AGENT_SKUS",
+        "premium_3m:infinite:ton=0:usd=0,premium_6m:infinite:ton=0:usd=0",
+    )
+    s = load_settings(env_file="/nonexistent/.env")
+    assert len(s.skus) == 2
+    assert all(sku.price_ton == 0 for sku in s.skus)
+    assert all(sku.price_usd == 0 for sku in s.skus)
+    assert set(s.payment_rails) == {"TON", "USDT"}
+
+
+def test_load_settings_skus_negative_price_raises(clean_env, monkeypatch):
+    _apply_required(monkeypatch)
+    monkeypatch.setenv("AGENT_SKUS", "bad:infinite:ton=-1")
+    with pytest.raises(RuntimeError, match=">= 0"):
+        load_settings(env_file="/nonexistent/.env")

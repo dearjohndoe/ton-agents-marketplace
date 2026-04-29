@@ -91,8 +91,8 @@ def _parse_sku_prices(price_spec: list[str], sku_id: str) -> tuple[int | None, i
             ival = int(val)
         except ValueError:
             raise RuntimeError(f"SKU '{sku_id}': '{key}' must be integer, got '{val}'")
-        if ival <= 0:
-            raise RuntimeError(f"SKU '{sku_id}': '{key}' must be positive")
+        if ival < 0:
+            raise RuntimeError(f"SKU '{sku_id}': '{key}' must be >= 0 (use 0 for dynamic pricing)")
         if key == "ton":
             price_ton = ival
         elif key == "usd":

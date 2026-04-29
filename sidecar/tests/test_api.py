@@ -1039,3 +1039,108 @@ async def test_invoke_unknown_sku_returns_400(app_factory, tmp_path):
         # Unknown sku → 400.
         resp = await c.post("/invoke", json={"capability": "translate", "sku": "ghost"})
         assert resp.status == 400
+
+
+# ── Dynamic pricing ────────────────────────────────────────────────────
+
+
+def _make_dynamic_app(app_factory, tmp_path, sku_ids: list[str]) -> "SidecarApp":
+    """Build a SidecarApp with price_ton=0 AND price_usd=0 SKUs (dynamic pricing sentinel)."""
+    skus = tuple(
+        AgentSku(sku_id=sid, title=sid, price_ton=0, price_usd=0, initial_stock=None)
+        for sid in sku_ids
+    )
+    app = app_factory(skus=skus, payment_rails=("TON",))
+    app.args_schema = {"text": {"type": "string", "required": True}}
+    app._file_store_dir.mkdir(parents=True, exist_ok=True)
+    return app
+
+
+async def _dynamic_test_client(app_factory, tmp_path, sku_ids: list[str]):
+    app = _make_dynamic_app(app_factory, tmp_path, sku_ids)
+
+    async def noop_startup():
+        app._file_store_dir.mkdir(parents=True, exist_ok=True)
+        await app.stock.init(app.settings.skus)
+
+    async def noop_shutdown():
+        await app.stock.close()
+
+    app.startup = noop_startup  # type: ignore[method-assign]
+    app.shutdown = noop_shutdown  # type: ignore[method-assign]
+    web_app = app.build_web_app()
+    web_app.on_startup.clear()
+    web_app.on_shutdown.clear()
+    web_app.on_startup.append(lambda _: noop_startup())
+    web_app.on_shutdown.append(lambda _: noop_shutdown())
+    return app, TestClient(TestServer(web_app))
+
+
+async def test_info_with_dynamic_sku_shows_fetched_prices(app_factory, tmp_path, monkeypatch):
+    app, tc = await _dynamic_test_client(app_factory, tmp_path, ["premium_3m", "premium_6m"])
+
+    async def fake_run(**kwargs):
+        assert kwargs["payload"]["mode"] == "prices"
+        return {"prices": {"premium_3m": {"ton": 42_000_000_000}, "premium_6m": {"ton": 75_000_000_000}}}
+
+    monkeypatch.setattr(api_module, "run_agent_subprocess", fake_run)
+
+    async with tc as c:
+        resp = await c.get("/info")
+        assert resp.status == 200
+        data = await resp.json()
+        skus = {s["id"]: s for s in data.get("skus", [])}
+        assert skus["premium_3m"]["price_ton"] == 42_000_000_000
+        assert skus["premium_6m"]["price_ton"] == 75_000_000_000
+
+
+async def test_info_with_dynamic_sku_uses_cache_on_second_call(app_factory, tmp_path, monkeypatch):
+    app, tc = await _dynamic_test_client(app_factory, tmp_path, ["premium_3m"])
+    call_count = 0
+
+    async def fake_run(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        return {"prices": {"premium_3m": {"ton": 10_000_000_000}}}
+
+    monkeypatch.setattr(api_module, "run_agent_subprocess", fake_run)
+
+    async with tc as c:
+        await c.get("/info")
+        await c.get("/info")
+        # Cache TTL not expired → agent called only once.
+        assert call_count == 1
+
+
+async def test_info_with_dynamic_sku_agent_failure_shows_no_price(app_factory, tmp_path, monkeypatch):
+    app, tc = await _dynamic_test_client(app_factory, tmp_path, ["premium_3m"])
+
+    async def fake_run(**kwargs):
+        raise RuntimeError("agent down")
+
+    monkeypatch.setattr(api_module, "run_agent_subprocess", fake_run)
+
+    async with tc as c:
+        resp = await c.get("/info")
+        assert resp.status == 200
+        data = await resp.json()
+        # Price absent (agent failed, cache empty) — no crash.
+        sku_entry = next(s for s in data.get("skus", []) if s["id"] == "premium_3m")
+        assert "price_ton" not in sku_entry
+
+
+async def test_invoke_preflight_dynamic_sku_shows_fetched_price(app_factory, tmp_path, monkeypatch):
+    app, tc = await _dynamic_test_client(app_factory, tmp_path, ["premium_3m"])
+
+    async def fake_run(**kwargs):
+        return {"prices": {"premium_3m": {"ton": 50_000_000_000}}}
+
+    monkeypatch.setattr(api_module, "run_agent_subprocess", fake_run)
+
+    async with tc as c:
+        resp = await c.post("/invoke", json={"capability": "translate", "sku": "premium_3m"})
+        assert resp.status == 402
+        data = await resp.json()
+        option = data["payment_options"][0]
+        assert option["amount"] == "50000000000"
+        assert resp.headers["x-ton-pay-amount"] == "50000000000"

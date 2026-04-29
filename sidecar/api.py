@@ -25,6 +25,7 @@ from stock import StockStore
 logger = logging.getLogger("sidecar")
 
 DESCRIBE_TIMEOUT = 10  # seconds
+DYNAMIC_PRICE_CACHE_TTL = 60  # seconds
 
 
 @dataclass
@@ -125,6 +126,10 @@ class SidecarApp:
             )
         self.stop_event = asyncio.Event()
         self.sidecar_id: str = ""
+        # Dynamic pricing cache (populated via agent mode=prices when SKU price==0)
+        self._dynamic_prices: dict[str, dict[str, int]] = {}
+        self._dynamic_prices_ts: float = 0.0
+        self._dynamic_prices_lock: asyncio.Lock | None = None
         self.heartbeat = HeartbeatManager(
             config=HeartbeatConfig(
                 registry_address=settings.registry_address,
@@ -289,6 +294,41 @@ class SidecarApp:
                 await asyncio.wait_for(self.stop_event.wait(), timeout=60)
             except asyncio.TimeoutError:
                 pass
+
+    # ── Dynamic pricing ────────────────────────────────────────────────
+
+    @property
+    def _has_dynamic_skus(self) -> bool:
+        return any(s.price_ton == 0 and s.price_usd == 0 for s in self.settings.skus)
+
+    async def _fetch_dynamic_prices(self) -> dict[str, dict[str, int]]:
+        """Call agent mode=prices and cache result for DYNAMIC_PRICE_CACHE_TTL seconds.
+
+        Returns dict: sku_id -> {"ton": nanoton, "usd": microusd}.
+        """
+        if self._dynamic_prices_lock is None:
+            self._dynamic_prices_lock = asyncio.Lock()
+        now = time.time()
+        async with self._dynamic_prices_lock:
+            if self._dynamic_prices and now - self._dynamic_prices_ts < DYNAMIC_PRICE_CACHE_TTL:
+                return self._dynamic_prices
+            try:
+                result = await run_agent_subprocess(
+                    command=self.settings.agent_command,
+                    payload={"mode": "prices"},
+                    timeout_seconds=self.settings.sync_timeout,
+                    env={"OWN_SIDECAR_ID": self.sidecar_id},
+                )
+                prices = result.get("prices")
+                if isinstance(prices, dict):
+                    self._dynamic_prices = {
+                        k: v for k, v in prices.items() if isinstance(v, dict)
+                    }
+                    self._dynamic_prices_ts = now
+                    logger.debug("Dynamic prices refreshed: %s", list(self._dynamic_prices.keys()))
+            except Exception:
+                logger.exception("Failed to fetch dynamic prices from agent")
+        return self._dynamic_prices
 
     # ── SKU resolution ─────────────────────────────────────────────
 
@@ -781,8 +821,19 @@ class SidecarApp:
                 return web.json_response({"error": "unsupported_rail_for_sku", "sku": sku.sku_id, "rail": rail}, status=400)
 
             # Determine payment amounts (quoted or static per-SKU).
-            min_amount = sku.price_ton or 0
-            min_amount_usdt = sku.price_usd or 0
+            # For dynamic SKUs (price==0), resolve current price from agent cache.
+            eff_ton = sku.price_ton  # may be 0 (dynamic sentinel when both rails are 0)
+            eff_usd = sku.price_usd
+            if eff_ton == 0 and eff_usd == 0:
+                try:
+                    dp = (await self._fetch_dynamic_prices()).get(sku.sku_id, {})
+                    eff_ton = dp.get("ton") or 0
+                    eff_usd = dp.get("usd") or 0
+                except Exception:
+                    logger.warning("Dynamic price fetch failed for SKU %s", sku.sku_id)
+
+            min_amount = eff_ton or 0
+            min_amount_usdt = eff_usd or 0
             if quote_id:
                 self._cleanup_expired_quotes()
                 quote_entry = self.quotes.get(quote_id)
@@ -809,7 +860,7 @@ class SidecarApp:
                     nonce = f"{uuid.uuid4().hex[:16]}:{self.sidecar_id}"
 
                 payment_options: list[dict[str, Any]] = []
-                if sku.price_ton:
+                if eff_ton:
                     payment_options.append({
                         "rail": "TON",
                         "address": self.settings.agent_wallet,
@@ -817,7 +868,7 @@ class SidecarApp:
                         "memo": nonce,
                         "sku": sku.sku_id,
                     })
-                if sku.price_usd and min_amount_usdt:
+                if eff_usd and min_amount_usdt:
                     usdt_master = USDT_MASTER_TESTNET if self.settings.testnet else USDT_MASTER_MAINNET
                     payment_options.append({
                         "rail": "USDT",
@@ -839,7 +890,7 @@ class SidecarApp:
                 }
 
                 headers: dict[str, str] = {}
-                if sku.price_ton:
+                if eff_ton:
                     headers["x-ton-pay-address"] = self.settings.agent_wallet
                     headers["x-ton-pay-amount"] = str(min_amount)
                     headers["x-ton-pay-nonce"] = nonce
@@ -1080,16 +1131,32 @@ class SidecarApp:
         except Exception:
             logger.exception("stock.list_views failed")
             views = []
+
+        # Fetch dynamic prices if any SKU uses ton=0 and usd=0 as the dynamic sentinel.
+        dynamic_prices: dict[str, dict[str, int]] = {}
+        if self._has_dynamic_skus:
+            try:
+                dynamic_prices = await self._fetch_dynamic_prices()
+            except Exception:
+                logger.exception("Dynamic price fetch failed for /info")
+
         skus_payload: list[dict[str, Any]] = []
         for v in views:
             entry: dict[str, Any] = {
                 "id": v.sku_id,
                 "title": v.title,
             }
-            if v.price_ton is not None:
-                entry["price_ton"] = v.price_ton
-            if v.price_usd is not None:
-                entry["price_usd"] = v.price_usd
+            sku_obj = self._skus_by_id.get(v.sku_id)
+            dp = dynamic_prices.get(v.sku_id, {})
+            is_dynamic = sku_obj is not None and sku_obj.price_ton == 0 and sku_obj.price_usd == 0
+
+            price_ton = dp.get("ton", None if is_dynamic else v.price_ton)
+            price_usd = dp.get("usd", None if is_dynamic else v.price_usd)
+
+            if price_ton is not None:
+                entry["price_ton"] = price_ton
+            if price_usd is not None:
+                entry["price_usd"] = price_usd
             if v.stock_left is not None:
                 entry["stock_left"] = v.stock_left
             if v.total is not None:
