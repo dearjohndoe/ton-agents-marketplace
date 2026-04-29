@@ -346,6 +346,17 @@ body {
   font-size: 12px;
   color: var(--text-muted);
   line-height: 1.5;
+  white-space: pre-line;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.agent-summary-desc--full {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
+  white-space: pre-wrap;
 }
 
 /* Compact rating inside summary */

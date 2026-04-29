@@ -127,6 +127,19 @@ function AgentGallery({ images }: { images: string[] }) {
   )
 }
 
+function normalizeDesc(s: string): string {
+  return s.replace(/\\n/g, '\n')
+}
+
+function AgentDesc({ description, full }: { description: string; full: boolean }) {
+  const text = normalizeDesc(description)
+  if (full) {
+    return <p className="agent-summary-desc agent-summary-desc--full">{text}</p>
+  }
+  const preview = text.length > 150 ? text.slice(0, 150) + '…' : text
+  return <p className="agent-summary-desc">{preview}</p>
+}
+
 function ShareButton({ sidecarId }: { sidecarId: string }) {
   const [copied, setCopied] = useState(false)
   function handleShare() {
@@ -337,7 +350,7 @@ export function AgentItem({ agent, expanded, onToggle, locked }: Props) {
       {(onChainRating || ratingLoading || ratingError || agent.description) && (
         <div className="agent-summary" onClick={locked ? undefined : onToggle}>
           <RatingBlock rating={onChainRating} loading={ratingLoading} error={ratingError} onRefresh={ratingRefresh} />
-          {agent.description && <p className="agent-summary-desc">{agent.description}</p>}
+          {agent.description && <AgentDesc description={agent.description} full={!!locked || expanded} />}
         </div>
       )}
 
