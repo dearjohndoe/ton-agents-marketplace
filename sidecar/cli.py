@@ -92,7 +92,7 @@ def _resolve_service_name(args: argparse.Namespace, *, for_install: bool = False
         return _normalize_service_name(name)
 
     if name:
-        return _normalize_service_name(name)
+        return name
 
     agents = _discover_sidecar_agents()
     if not agents:
@@ -429,6 +429,7 @@ def _generate_wallet_keypair() -> tuple[str, str, str]:
 def handle_init(args: argparse.Namespace, _prefill: dict[str, str] | None = None) -> int:
     output = getattr(args, "output", ".env")
     prefill = _prefill or {}
+    directory = Path(getattr(args, "directory", "."))
 
     print("=== sidecar init ===\n")
 

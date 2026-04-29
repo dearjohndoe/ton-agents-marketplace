@@ -260,7 +260,7 @@ def test_handle_service_command_start(monkeypatch):
 
     args = argparse.Namespace(service_command="start", name="sidecar")
     assert handle_service_command(args) == 0
-    assert calls == [["systemctl", "start", "sidecar-ctlx-agent.service"]]
+    assert calls == [["systemctl", "start", "sidecar.service"]]
 
 
 def test_handle_service_command_stop(monkeypatch):
@@ -268,7 +268,7 @@ def test_handle_service_command_stop(monkeypatch):
     monkeypatch.setattr(cli_module, "_run_command", lambda cmd: calls.append(cmd) or 0)
     args = argparse.Namespace(service_command="stop", name="sidecar")
     assert handle_service_command(args) == 0
-    assert calls == [["systemctl", "stop", "sidecar-ctlx-agent.service"]]
+    assert calls == [["systemctl", "stop", "sidecar.service"]]
 
 
 def test_handle_service_command_logs(monkeypatch):
@@ -276,7 +276,7 @@ def test_handle_service_command_logs(monkeypatch):
     monkeypatch.setattr(cli_module, "_run_command", lambda cmd: calls.append(cmd) or 0)
     args = argparse.Namespace(service_command="logs", name="sidecar", follow=True, lines=100)
     handle_service_command(args)
-    assert calls == [["journalctl", "-u", "sidecar-ctlx-agent.service", "-n", "100", "-f"]]
+    assert calls == [["journalctl", "-u", "sidecar.service", "-n", "100", "-f"]]
 
 
 # ── handle_doctor ──────────────────────────────────────────────────────
