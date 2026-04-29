@@ -16,6 +16,113 @@ from settings import Settings, load_settings
 
 logger = logging.getLogger("sidecar")
 
+# ── constants ─────────────────────────────────────────────────────────────────
+
+_REGISTRY_ADDRESS = "UQCYxSFNCJHmBxVpgfqAesgjLQDsLch3WJG3MJYyhnBDS7gg"
+_CTLX_SUFFIX = "-ctlx-agent"
+_CAPABILITIES = ["translate", "summarize", "analyze", "generate", "classify", "qa", "code"]
+
+_AGENT_TEMPLATE = '''\
+import json
+import sys
+
+
+def describe() -> dict:
+    # Return the schema of arguments your agent accepts.
+    # Used for marketplace UI and request validation.
+    return {
+        "args_schema": {
+            "text": {"type": "string", "description": "Input text", "required": True},
+        }
+    }
+
+
+def run(body: dict) -> dict:
+    # TODO: implement your agent logic here.
+    # body contains the fields declared in describe().
+    text = body.get("text", "")
+    return {"result": f"echo: {text}"}
+
+
+if __name__ == "__main__":
+    request = json.loads(sys.stdin.read())
+    if request.get("mode") == "describe":
+        print(json.dumps(describe()))
+    else:
+        print(json.dumps(run(request.get("body", {}))))
+'''
+
+# ── service name helpers ──────────────────────────────────────────────────────
+
+def _normalize_service_name(name: str) -> str:
+    if not name.endswith(_CTLX_SUFFIX):
+        return f"{name}{_CTLX_SUFFIX}"
+    return name
+
+
+def _discover_sidecar_agents() -> list[str]:
+    """Scan /etc/systemd/system/ for installed sidecar agent services."""
+    systemd_dir = Path("/etc/systemd/system")
+    agents: list[str] = []
+    if not systemd_dir.exists():
+        return agents
+    for f in sorted(systemd_dir.glob("*.service")):
+        try:
+            content = f.read_text(encoding="utf-8", errors="replace")
+            if "TON Sidecar" in content:
+                agents.append(f.stem)
+        except OSError:
+            pass
+    return agents
+
+
+def _resolve_service_name(args: argparse.Namespace, *, for_install: bool = False) -> str | None:
+    """Return normalized service name; prompt user if --name not specified."""
+    name: str | None = getattr(args, "name", None)
+
+    if for_install:
+        if not name:
+            if not sys.stdin.isatty():
+                print("--name required for install")
+                return None
+            name = input("Agent short name (will become <name>-ctlx-agent): ").strip()
+            if not name:
+                print("Name cannot be empty")
+                return None
+        return _normalize_service_name(name)
+
+    if name:
+        return _normalize_service_name(name)
+
+    agents = _discover_sidecar_agents()
+    if not agents:
+        print("No sidecar agents found in /etc/systemd/system/. Use --name to specify.")
+        return None
+    if len(agents) == 1:
+        print(f"Using agent: {agents[0]}")
+        return agents[0]
+
+    if not sys.stdin.isatty():
+        print("Multiple sidecar agents found. Use --name to specify one:")
+        for a in agents:
+            print(f"  {a}")
+        return None
+
+    print("Installed sidecar agents:")
+    for i, a in enumerate(agents, 1):
+        print(f"  {i}) {a}")
+    while True:
+        try:
+            choice = input("Select number: ").strip()
+            idx = int(choice) - 1
+            if 0 <= idx < len(agents):
+                return agents[idx]
+            print(f"Enter 1–{len(agents)}")
+        except (ValueError, EOFError, KeyboardInterrupt):
+            return None
+
+
+# ── server ────────────────────────────────────────────────────────────────────
 
 async def run_server(settings: Settings) -> int:
     from aiohttp import web
@@ -38,8 +145,13 @@ async def run_server(settings: Settings) -> int:
     return 0
 
 
+# ── systemd helpers ───────────────────────────────────────────────────────────
+
 def _run_command(command: list[str]) -> int:
-    return subprocess.run(command, check=False).returncode
+    result = subprocess.run(command, check=False)
+    if result.returncode != 0:
+        print(f"Command failed (rc={result.returncode}): {' '.join(command)}", file=sys.stderr)
+    return result.returncode
 
 
 def _systemctl_command(name: str, *args: str) -> list[str]:
@@ -69,8 +181,13 @@ def render_systemd_unit(service_name: str, workdir: str, env_file: str, python_b
     )
 
 
+# ── service commands ──────────────────────────────────────────────────────────
+
 def handle_service_install(args: argparse.Namespace) -> int:
-    service_name = args.name
+    service_name = _resolve_service_name(args, for_install=True)
+    if service_name is None:
+        return 1
+
     workdir = str(Path(args.workdir).resolve())
     env_file = str(Path(args.env_file).resolve())
     python_bin = str(Path(sys.executable).absolute())
@@ -82,7 +199,6 @@ def handle_service_install(args: argparse.Namespace) -> int:
         print(f"Env file not found: {env_file}")
         return 1
 
-    # Restrict .env permissions to owner-only — it contains the wallet private key.
     try:
         env_path.chmod(0o600)
     except OSError as exc:
@@ -106,7 +222,10 @@ def handle_service_install(args: argparse.Namespace) -> int:
 
 
 def handle_service_uninstall(args: argparse.Namespace) -> int:
-    service_name = args.name
+    service_name = _resolve_service_name(args)
+    if service_name is None:
+        return 1
+
     unit_path = Path(f"/etc/systemd/system/{service_name}.service")
 
     _run_command(_systemctl_command(service_name, "stop"))
@@ -143,8 +262,13 @@ def handle_service_command(args: argparse.Namespace) -> int:
         return handle_service_install(args)
     if args.service_command == "uninstall":
         return handle_service_uninstall(args)
+
+    service_name = _resolve_service_name(args)
+    if service_name is None:
+        return 1
+
     if args.service_command == "logs":
-        cmd = ["journalctl", "-u", f"{args.name}.service", "-n", str(args.lines)]
+        cmd = ["journalctl", "-u", f"{service_name}.service", "-n", str(args.lines)]
         if args.follow:
             cmd.append("-f")
         return _run_command(cmd)
@@ -161,18 +285,15 @@ def handle_service_command(args: argparse.Namespace) -> int:
         except Exception as exc:
             print(f"Warning: could not clear heartbeat state: {exc}")
 
-    mapping = {
-        "start": "start",
-        "stop": "stop",
-        "restart": "restart",
-        "status": "status",
-    }
+    mapping = {"start": "start", "stop": "stop", "restart": "restart", "status": "status"}
     action = mapping.get(args.service_command)
     if action is None:
         print("Unknown service command")
         return 1
-    return _run_command(_systemctl_command(args.name, action))
+    return _run_command(_systemctl_command(service_name, action))
 
+
+# ── doctor ────────────────────────────────────────────────────────────────────
 
 def handle_doctor(args: argparse.Namespace) -> int:
     checks: dict[str, Any] = {
@@ -220,6 +341,8 @@ def handle_doctor(args: argparse.Namespace) -> int:
     ok = checks["env_exists"] and checks["settings"] == "ok" and str(checks.get("describe_mode", "")).startswith("ok")
     return 0 if ok else 1
 
+
+# ── stock ─────────────────────────────────────────────────────────────────────
 
 async def handle_stock_command(args: argparse.Namespace) -> int:
     settings = load_settings(args.env_file)
@@ -283,6 +406,213 @@ async def handle_stock_command(args: argparse.Namespace) -> int:
         await store.close()
 
 
+# ── init ──────────────────────────────────────────────────────────────────────
+
+def _generate_wallet_keypair() -> tuple[str, str, str]:
+    """Returns (pk_hex, seed_phrase_or_empty, wallet_address)."""
+    try:
+        from pytoniq_core.crypto.keys import mnemonic_new, mnemonic_to_private_key
+        words = mnemonic_new(24)
+        _, priv_bytes = mnemonic_to_private_key(words)
+        pk_hex = bytes(priv_bytes).hex()
+        seed = " ".join(words)
+    except ImportError:
+        import secrets
+        pk_hex = secrets.token_bytes(32).hex()
+        seed = ""
+
+    from settings import _derive_wallet_address
+    address = _derive_wallet_address(pk_hex, False)
+    return pk_hex, seed, address
+
+
+def handle_init(args: argparse.Namespace, _prefill: dict[str, str] | None = None) -> int:
+    output = getattr(args, "output", ".env")
+    prefill = _prefill or {}
+
+    print("=== sidecar init ===\n")
+
+    agent_name = input("Agent name (AGENT_NAME): ").strip()
+    if not agent_name:
+        print("Name is required")
+        return 1
+
+    print("Description (AGENT_DESCRIPTION, Ctrl+D when done):")
+    desc_lines: list[str] = []
+    try:
+        while True:
+            desc_lines.append(input(""))
+    except EOFError:
+        pass
+    agent_description = "\n".join(desc_lines).strip()
+
+    if "capability" in prefill:
+        capability = prefill["capability"]
+        print(f"Capability: {capability}")
+    else:
+        print("\nCapability:")
+        for i, c in enumerate(_CAPABILITIES, 1):
+            print(f"  {i}) {c}")
+        cap_raw = input("Number or custom value: ").strip()
+        try:
+            capability = _CAPABILITIES[int(cap_raw) - 1]
+        except (ValueError, IndexError):
+            capability = cap_raw
+    if not capability:
+        print("Capability is required")
+        return 1
+
+    price_str = input("\nPrice in TON (e.g. 0.01, leave blank to skip): ").strip()
+    price_nanoton: int | None = None
+    if price_str:
+        try:
+            price_nanoton = int(float(price_str) * 1_000_000_000)
+            if price_nanoton <= 0:
+                raise ValueError
+        except ValueError:
+            print(f"Invalid price: {price_str!r}")
+            return 1
+
+    usd_prompt = "Price in USDT (e.g. 1.0, leave blank to skip): " if price_nanoton is not None \
+        else "Price in USDT (e.g. 1.0, required — TON price was skipped): "
+    usd_str = input(usd_prompt).strip()
+    price_usdt: int | None = None
+    if usd_str:
+        try:
+            price_usdt = int(float(usd_str) * 1_000_000)
+            if price_usdt <= 0:
+                raise ValueError
+        except ValueError:
+            print(f"Invalid USDT price: {usd_str!r}")
+            return 1
+    elif price_nanoton is None:
+        print("At least one price rail is required. Enter TON or USDT price.")
+        return 1
+
+    endpoint = input("Endpoint URL (e.g. https://my-agent.com): ").strip()
+    if not endpoint:
+        print("Endpoint is required")
+        return 1
+
+    agent_command = input(f"Agent command [$SIDECAR_PYTHON {directory}/agent.py]: ").strip() or f"$SIDECAR_PYTHON {directory}/agent.py"
+
+    print("\nWallet private key:")
+    print("  1) Enter existing hex key")
+    print("  2) Generate new keypair")
+    pk_choice = input("Choice [1/2]: ").strip()
+
+    wallet_pk = ""
+    wallet_seed = ""
+    wallet_address = ""
+
+    if pk_choice == "2":
+        wallet_pk, wallet_seed, wallet_address = _generate_wallet_keypair()
+        print(f"\nNew wallet generated!")
+        print(f"  Address: {wallet_address}")
+        if wallet_seed:
+            print(f"  Seed:    {wallet_seed}")
+            print("  SAVE THE SEED PHRASE in a safe place!\n")
+        else:
+            print("  (pytoniq_core not installed — no seed phrase; save the private key!)\n")
+    else:
+        wallet_pk = input("AGENT_WALLET_PK (hex): ").strip()
+        if not wallet_pk:
+            print("Private key is required")
+            return 1
+        try:
+            from settings import _derive_wallet_address
+            wallet_address = _derive_wallet_address(wallet_pk, False)
+            print(f"  Wallet address: {wallet_address}")
+        except Exception as exc:
+            print(f"  Warning: could not derive wallet address: {exc}")
+
+    if "\n" in agent_description:
+        _desc_escaped = agent_description.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+        _desc_line = f'AGENT_DESCRIPTION="{_desc_escaped}"'
+    else:
+        _desc_line = f"AGENT_DESCRIPTION={agent_description}"
+
+    lines = [
+        f"AGENT_NAME={agent_name}",
+        _desc_line,
+        f"AGENT_CAPABILITY={capability}",
+        f"AGENT_ENDPOINT={endpoint}",
+        f"AGENT_COMMAND={agent_command}",
+        f"AGENT_WALLET_PK={wallet_pk}",
+        f"AGENT_WALLET_SEED={wallet_seed}",
+        f"REGISTRY_ADDRESS={_REGISTRY_ADDRESS}",
+        "",
+        "PORT=8080",
+        "TESTNET=false",
+    ]
+    insert_at = 4
+    if price_nanoton is not None:
+        lines.insert(insert_at, f"AGENT_PRICE={price_nanoton}")
+        insert_at += 1
+    if price_usdt is not None:
+        lines.insert(insert_at, f"AGENT_PRICE_USD={price_usdt}")
+
+    out_path = Path(output)
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    out_path.chmod(0o600)
+
+    print(f"\n.env written to {out_path}")
+    if wallet_address:
+        print(f"Wallet address: {wallet_address}")
+        print("Fund the wallet with TON before starting the agent!")
+
+    return 0
+
+
+# ── scaffold ──────────────────────────────────────────────────────────────────
+
+def handle_scaffold(args: argparse.Namespace) -> int:
+    directory = Path(args.directory)
+    capability: str = getattr(args, "capability", "") or ""
+
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"Cannot create directory {directory}: {exc}")
+        return 1
+
+    agent_py = directory / "agent.py"
+    if agent_py.exists():
+        print(f"{agent_py} already exists — skipping")
+    else:
+        agent_py.write_text(_AGENT_TEMPLATE, encoding="utf-8")
+        print(f"Created {agent_py}")
+
+    reqs = directory / "requirements.txt"
+    if reqs.exists():
+        print(f"{reqs} already exists — skipping")
+    else:
+        reqs.write_text("python-dotenv\n# Add your dependencies below\n", encoding="utf-8")
+        print(f"Created {reqs}")
+
+    env_file = directory / ".env"
+    if env_file.exists():
+        print(f"{env_file} already exists — skipping")
+    else:
+        print(f"\nCreating {env_file} ...")
+        init_args = argparse.Namespace(output=str(env_file))
+        prefill = {"capability": capability} if capability else {}
+        rc = handle_init(init_args, _prefill=prefill)
+        if rc != 0:
+            return rc
+        slug = directory.name
+        with env_file.open("a", encoding="utf-8") as f:
+            f.write(f"\nSIDECAR_STATE_PATH=.sidecar_state.{slug}.json\n")
+            f.write(f"SIDECAR_TX_DB_PATH=processed_txs.{slug}.db\n")
+
+    print(f"\nScaffold complete! Next steps:")
+    print(f"  1. Edit {agent_py}")
+    print(f"  2. sudo sidecar service install --name <agent-name> --env-file {env_file}")
+    return 0
+
+
+# ── arg parser ────────────────────────────────────────────────────────────────
+
 def parse_cli_args() -> tuple[argparse.ArgumentParser, dict[str, argparse.ArgumentParser], argparse.Namespace]:
     parser = argparse.ArgumentParser(description="TON Agent Marketplace sidecar CLI")
     subparsers = parser.add_subparsers(dest="command")
@@ -291,11 +621,13 @@ def parse_cli_args() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argume
     run_parser = subparsers.add_parser("run", help="Run sidecar HTTP server")
     run_parser.add_argument("--env-file", default=".env", help="Path to .env file")
     run_parser.add_argument("--force-heartbeat", action="store_true",
-                            help="Clear last_heartbeat state so a fresh heartbeat is sent on startup")
+                            help="Clear last_heartbeat so a fresh heartbeat is sent on startup")
     parser_map["run"] = run_parser
 
     service_parser = subparsers.add_parser("service", help="Manage systemd service")
-    service_parser.add_argument("--name", default="sidecar", help="Service name without .service")
+    service_parser.add_argument("--name", default=None,
+                                help="Service name (without .service suffix); -ctlx-agent appended automatically. "
+                                     "If omitted, auto-detected from installed services.")
     service_sub = service_parser.add_subparsers(dest="service_command", required=True)
 
     install_parser = service_sub.add_parser("install", help="Install + enable + start systemd service")
@@ -309,7 +641,7 @@ def parse_cli_args() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argume
     service_sub.add_parser("stop", help="Stop service")
     restart_parser = service_sub.add_parser("restart", help="Restart service")
     restart_parser.add_argument("--force-heartbeat", action="store_true",
-                                help="Clear last_heartbeat state so a fresh heartbeat is sent after restart")
+                                help="Clear last_heartbeat after restart")
     restart_parser.add_argument("--env-file", default=".env", help="Path to .env file (needed for --force-heartbeat)")
     service_sub.add_parser("status", help="Show service status")
     logs_parser = service_sub.add_parser("logs", help="Show service logs")
@@ -333,13 +665,26 @@ def parse_cli_args() -> tuple[argparse.ArgumentParser, dict[str, argparse.Argume
     stock_add.add_argument("delta", help="Integer delta (can be negative)")
     parser_map["stock"] = stock_parser
 
+    init_parser = subparsers.add_parser("init", help="Interactive wizard to create a .env file")
+    init_parser.add_argument("--output", default=".env", help="Output file path (default: .env)")
+    parser_map["init"] = init_parser
+
+    scaffold_parser = subparsers.add_parser("scaffold", help="Create a new agent directory with starter files")
+    scaffold_parser.add_argument("directory", help="Directory to create")
+    scaffold_parser.add_argument("--capability", default="", help="Pre-fill capability (e.g. translate)")
+    parser_map["scaffold"] = scaffold_parser
+
     help_parser = subparsers.add_parser("help", help="Show help")
-    help_parser.add_argument("topic", nargs="?", choices=["run", "service", "doctor", "stock"], help="Help topic")
+    help_parser.add_argument("topic", nargs="?",
+                             choices=["run", "service", "doctor", "stock", "init", "scaffold"],
+                             help="Help topic")
     parser_map["help"] = help_parser
 
     args = parser.parse_args()
     return parser, parser_map, args
 
+
+# ── main ──────────────────────────────────────────────────────────────────────
 
 async def async_main() -> int:
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -366,6 +711,12 @@ async def async_main() -> int:
 
     if args.command == "stock":
         return await handle_stock_command(args)
+
+    if args.command == "init":
+        return handle_init(args)
+
+    if args.command == "scaffold":
+        return handle_scaffold(args)
 
     if args.command == "help":
         if args.topic:

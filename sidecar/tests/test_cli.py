@@ -13,11 +13,15 @@ import pytest
 import cli as cli_module
 from cli import (
     handle_doctor,
+    handle_init,
+    handle_scaffold,
     handle_service_command,
     handle_service_install,
     handle_service_uninstall,
     parse_cli_args,
     render_systemd_unit,
+    _normalize_service_name,
+    _discover_sidecar_agents,
 )
 
 
@@ -185,7 +189,7 @@ def test_handle_service_install_success(tmp_path, monkeypatch, capsys):
     assert handle_service_install(args) == 0
     # Unit content was written.
     assert "unit" in written
-    assert "TON Sidecar (sidecar-x)" in written["unit"]
+    assert "TON Sidecar (sidecar-x-ctlx-agent)" in written["unit"]
     # daemon-reload and enable --now were both called.
     assert ["systemctl", "daemon-reload"] in run_calls
     assert any("enable" in cmd for cmd in run_calls)
@@ -256,7 +260,7 @@ def test_handle_service_command_start(monkeypatch):
 
     args = argparse.Namespace(service_command="start", name="sidecar")
     assert handle_service_command(args) == 0
-    assert calls == [["systemctl", "start", "sidecar.service"]]
+    assert calls == [["systemctl", "start", "sidecar-ctlx-agent.service"]]
 
 
 def test_handle_service_command_stop(monkeypatch):
@@ -264,7 +268,7 @@ def test_handle_service_command_stop(monkeypatch):
     monkeypatch.setattr(cli_module, "_run_command", lambda cmd: calls.append(cmd) or 0)
     args = argparse.Namespace(service_command="stop", name="sidecar")
     assert handle_service_command(args) == 0
-    assert calls == [["systemctl", "stop", "sidecar.service"]]
+    assert calls == [["systemctl", "stop", "sidecar-ctlx-agent.service"]]
 
 
 def test_handle_service_command_logs(monkeypatch):
@@ -272,7 +276,7 @@ def test_handle_service_command_logs(monkeypatch):
     monkeypatch.setattr(cli_module, "_run_command", lambda cmd: calls.append(cmd) or 0)
     args = argparse.Namespace(service_command="logs", name="sidecar", follow=True, lines=100)
     handle_service_command(args)
-    assert calls == [["journalctl", "-u", "sidecar.service", "-n", "100", "-f"]]
+    assert calls == [["journalctl", "-u", "sidecar-ctlx-agent.service", "-n", "100", "-f"]]
 
 
 # ── handle_doctor ──────────────────────────────────────────────────────
@@ -387,3 +391,194 @@ def test_run_command_propagates_returncode():
 def test_systemctl_command_builder():
     cmd = cli_module._systemctl_command("myagent", "restart")
     assert cmd == ["systemctl", "restart", "myagent.service"]
+
+
+# ── _normalize_service_name ─────────────────────────────────────────────
+
+def test_normalize_adds_suffix():
+    assert _normalize_service_name("my-agent") == "my-agent-ctlx-agent"
+
+
+def test_normalize_no_double_suffix():
+    assert _normalize_service_name("my-agent-ctlx-agent") == "my-agent-ctlx-agent"
+
+
+# ── _discover_sidecar_agents ────────────────────────────────────────────
+
+def test_discover_sidecar_agents_finds_units(tmp_path, monkeypatch):
+    (tmp_path / "foo-ctlx-agent.service").write_text("[Unit]\nDescription=TON Sidecar (foo-ctlx-agent)\n")
+    (tmp_path / "other.service").write_text("[Unit]\nDescription=Something else\n")
+    monkeypatch.setattr(cli_module.Path, "__new__", lambda cls, *a, **k: object.__new__(cls))
+
+    import cli as cm
+    original = cm.Path
+    monkeypatch.setattr(cm, "Path", lambda p: tmp_path if p == "/etc/systemd/system" else original(p))
+
+    found = _discover_sidecar_agents()
+    assert "foo-ctlx-agent" in found
+    assert "other" not in found
+
+
+# ── handle_init ─────────────────────────────────────────────────────────
+
+_EOF = object()  # sentinel: mock input raises EOFError when it sees this
+
+
+def _make_input_mock(values: list):
+    it = iter(values)
+
+    def mock(prompt=""):
+        val = next(it)
+        if val is _EOF:
+            raise EOFError
+        return val
+
+    return mock
+
+
+def test_handle_init_creates_env(tmp_path, monkeypatch, capsys):
+    out_file = tmp_path / ".env"
+    monkeypatch.setattr("builtins.input", _make_input_mock([
+        "Test Agent",           # name
+        "Does stuff",           # description line 1
+        "Second line",          # description line 2 (tests multi-line)
+        _EOF,                   # Ctrl+D → end description
+        "1",                    # capability → translate
+        "0.01",                 # price in TON
+        "",                     # price in USDT (optional when TON set)
+        "https://example.com",  # endpoint
+        "",                     # agent command (default)
+        "1",                    # wallet choice: enter existing
+        "aabbcc" + "00" * 29,  # pk hex (32 bytes)
+    ]))
+
+    import settings as settings_mod
+    monkeypatch.setattr(settings_mod, "_derive_wallet_address", lambda pk, t: "UQfakeaddress")
+
+    args = argparse.Namespace(output=str(out_file))
+    rc = handle_init(args)
+    assert rc == 0
+    assert out_file.exists()
+    content = out_file.read_text()
+    assert "AGENT_NAME=Test Agent" in content
+    assert "AGENT_CAPABILITY=translate" in content
+    assert f"AGENT_PRICE={int(0.01 * 1_000_000_000)}" in content
+    assert "AGENT_ENDPOINT=https://example.com" in content
+    assert (out_file.stat().st_mode & 0o777) == 0o600
+
+
+def test_handle_init_multiline_description(tmp_path, monkeypatch):
+    out_file = tmp_path / ".env"
+    monkeypatch.setattr("builtins.input", _make_input_mock([
+        "Agent",
+        "Line one",
+        "",                     # empty line mid-description — should be kept
+        "Line two",
+        _EOF,
+        "1",
+        "0.01",
+        "",                     # USDT optional when TON set
+        "https://x.com",
+        "",
+        "1",
+        "aa" * 32,
+    ]))
+    import settings as settings_mod
+    monkeypatch.setattr(settings_mod, "_derive_wallet_address", lambda pk, t: "UQ")
+    args = argparse.Namespace(output=str(out_file))
+    assert handle_init(args) == 0
+    content = out_file.read_text()
+    assert "Line one" in content
+    assert "Line two" in content
+    # .env must be parseable by dotenv — multi-line value must not break format
+    from dotenv import dotenv_values
+    parsed = dotenv_values(out_file)
+    desc = parsed["AGENT_DESCRIPTION"]
+    assert "Line one" in desc
+    assert "Line two" in desc
+    assert "\n" in desc  # newline preserved after round-trip
+
+
+def test_handle_init_invalid_price(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr("builtins.input", _make_input_mock([
+        "Agent",
+        "Desc",
+        _EOF,
+        "translate",
+        "notanumber",  # bad price
+    ]))
+    args = argparse.Namespace(output=str(tmp_path / ".env"))
+    assert handle_init(args) == 1
+
+
+def test_handle_init_no_ton_usdt_only(tmp_path, monkeypatch):
+    """TON price skipped → USDT required and written."""
+    out_file = tmp_path / ".env"
+    monkeypatch.setattr("builtins.input", _make_input_mock([
+        "Agent",
+        "Desc",
+        _EOF,
+        "1",
+        "",                     # TON price blank → skip
+        "1.5",                  # USDT price (required)
+        "https://example.com",
+        "",
+        "1",
+        "aabbcc" + "00" * 29,
+    ]))
+    import settings as settings_mod
+    monkeypatch.setattr(settings_mod, "_derive_wallet_address", lambda pk, t: "UQfake")
+    args = argparse.Namespace(output=str(out_file))
+    assert handle_init(args) == 0
+    content = out_file.read_text()
+    assert "AGENT_PRICE=" not in content
+    assert f"AGENT_PRICE_USD={int(1.5 * 1_000_000)}" in content
+    assert "AGENT_NAME=Agent" in content
+
+
+def test_handle_init_no_price_fails(monkeypatch, tmp_path):
+    """Both TON and USDT blank → error."""
+    monkeypatch.setattr("builtins.input", _make_input_mock([
+        "Agent",
+        "Desc",
+        _EOF,
+        "1",
+        "",                     # TON blank
+        "",                     # USDT blank → must fail
+    ]))
+    args = argparse.Namespace(output=str(tmp_path / ".env"))
+    assert handle_init(args) == 1
+
+
+# ── handle_scaffold ─────────────────────────────────────────────────────
+
+def test_handle_scaffold_creates_files(tmp_path, monkeypatch):
+    target = tmp_path / "my-agent"
+    monkeypatch.setattr("builtins.input", _make_input_mock([
+        "My Agent",
+        "Desc",
+        _EOF,                   # end description
+        # capability skipped — prefilled from --capability arg
+        "0.05",
+        "",                     # USDT optional when TON set
+        "https://x.com",
+        "",                     # agent command (default)
+        "1",                    # wallet: enter existing
+        "bb" * 32,
+    ]))
+
+    import settings as settings_mod
+    monkeypatch.setattr(settings_mod, "_derive_wallet_address", lambda pk, t: "UQtest")
+
+    args = argparse.Namespace(directory=str(target), capability="translate")
+    rc = handle_scaffold(args)
+    assert rc == 0
+    assert (target / "agent.py").exists()
+    assert (target / "requirements.txt").exists()
+    assert (target / ".env").exists()
+    agent_src = (target / "agent.py").read_text()
+    assert "describe" in agent_src
+    assert "run" in agent_src
+    env_content = (target / ".env").read_text()
+    assert "SIDECAR_STATE_PATH=.sidecar_state.my-agent.json" in env_content
+    assert "SIDECAR_TX_DB_PATH=processed_txs.my-agent.db" in env_content

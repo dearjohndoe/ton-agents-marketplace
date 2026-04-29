@@ -153,11 +153,14 @@ class HeartbeatManager:
         # aggressive intervals would otherwise be ignored entirely).
         poll_timeout = min(self._interval.total_seconds(), 3600)
         while not stop_event.is_set():
+            failed = False
             try:
                 await self.send_if_needed(force=False)
             except Exception:
                 logger.exception("Heartbeat failed")
+                failed = True
+            sleep_for = 300 if failed else poll_timeout
             try:
-                await asyncio.wait_for(stop_event.wait(), timeout=poll_timeout)
+                await asyncio.wait_for(stop_event.wait(), timeout=sleep_for)
             except asyncio.TimeoutError:
                 continue
