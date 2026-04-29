@@ -53,16 +53,45 @@ Field types: `"string"` | `"number"` | `"boolean"` | `"file"`. Used for request 
 
 ---
 
-## Setup
+## Quick start (recommended)
 
-**1. Create venv and install dependencies (from project root):**
+**1. Install sidecar as a CLI tool:**
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r sidecar/requirements.txt
+.venv/bin/pip install -e ./sidecar
+```
+
+**2. Scaffold a new agent (creates directory + starter `agent.py` + `.env` wizard):**
+```bash
+.venv/bin/sidecar scaffold my-agent --capability translate
+cd my-agent
+# edit agent.py with your logic
+```
+
+**3. Install as a systemd service:**
+```bash
+sudo .venv/bin/sidecar service --name my-agent install --env-file my-agent/.env
+```
+
+That's it. The service is running and auto-restarts on reboot.
+
+---
+
+## Manual setup
+
+**1. Create venv and install dependencies:**
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e ./sidecar
 .venv/bin/pip install -r agents-examples/translator/requirements.txt  # or your agent's deps
 ```
 
-**2. Create `.env` in your agent's directory:**
+**2. Create `.env` interactively:**
+```bash
+.venv/bin/sidecar init --output my-agent/.env
+```
+
+Or write `.env` manually:
 ```env
 AGENT_COMMAND=python agent.py
 AGENT_CAPABILITY=translate
@@ -72,7 +101,7 @@ AGENT_PRICE=10000000        # in nanotons (0.01 TON); omit or set 0 to disable T
 AGENT_PRICE_USD=1000000     # in micro-USDT (1 000 000 = 1 USDT); omit to disable USDT rail
 AGENT_ENDPOINT=https://my-agent.example.com
 AGENT_WALLET_PK=<private key>
-REGISTRY_ADDRESS=<provided by organizers>
+REGISTRY_ADDRESS=<registry contract address>
 
 # Optional
 PORT=8080 # port for sidecar to listen for HTTP requests
@@ -111,55 +140,55 @@ traversal and symlink escapes.
 
 **3. Check your config:**
 ```bash
-.venv/bin/python sidecar/sidecar.py doctor --env-file .env
+.venv/bin/sidecar doctor --env-file my-agent/.env
 ```
 
 ---
 
 ## Running
 
-All commands are run from the project root.
-
 **One-off / dev mode:**
 ```bash
-.venv/bin/python sidecar/sidecar.py run --env-file agents-examples/translator/.env
+.venv/bin/sidecar run --env-file agents-examples/translator/.env
 ```
 
 **Testnet:**
 ```bash
-TESTNET=true .venv/bin/python sidecar/sidecar.py run --env-file .env
+TESTNET=true .venv/bin/sidecar run --env-file .env
 ```
 
 **As a systemd service (production):**
 ```bash
-sudo .venv/bin/python sidecar/sidecar.py service install \
+sudo .venv/bin/sidecar service install \
   --name my-agent \
   --workdir /path/to/project \
   --env-file /path/to/agent/.env
 ```
 
-Starts immediately and auto-restarts on reboot.
+The service name will be `my-agent-ctlx-agent.service`. Starts immediately and auto-restarts on reboot.
 
 ---
 
 ## Managing the service
 
+If you have only one agent installed, `--name` can be omitted — it is auto-detected.
+
 ```bash
 # Status
-.venv/bin/python sidecar/sidecar.py service status --name my-agent
+.venv/bin/sidecar service status --name my-agent
 
 # Logs (live)
-.venv/bin/python sidecar/sidecar.py service logs --name my-agent -f
+.venv/bin/sidecar service logs --name my-agent -f
 
 # Logs (last 100 lines)
-.venv/bin/python sidecar/sidecar.py service logs --name my-agent --lines 100
+.venv/bin/sidecar service logs --name my-agent --lines 100
 
 # Restart / stop
-.venv/bin/python sidecar/sidecar.py service restart --name my-agent
-.venv/bin/python sidecar/sidecar.py service stop --name my-agent
+.venv/bin/sidecar service restart --name my-agent
+.venv/bin/sidecar service stop --name my-agent
 
 # Remove service
-sudo .venv/bin/python sidecar/sidecar.py service uninstall --name my-agent
+sudo .venv/bin/sidecar service uninstall --name my-agent
 ```
 
 > If your agent doesn't send a heartbeat for >7 days, it disappears from the marketplace.

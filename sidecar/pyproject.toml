@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "catallaxy-sidecar"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp==3.11.18",
+    "python-dotenv==1.0.1",
+    "aiosqlite==0.20.0",
+    "tonutils==2.0.4",
+]
+
+[project.optional-dependencies]
+wallet-gen = ["pytoniq_core"]
+
+[project.scripts]
+sidecar = "sidecar:main"
+
+[tool.setuptools]
+py-modules = ["sidecar", "cli", "api", "settings", "heartbeat", "jetton", "jobs", "stock", "storage", "transfer", "verify"]

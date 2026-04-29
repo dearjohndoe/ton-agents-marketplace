@@ -53,16 +53,45 @@ Client → POST /invoke → sidecar проверяет платёж → запу
 
 ---
 
-## Настройка
+## Быстрый старт (рекомендуется)
 
-**1. Создайте venv и установите зависимости (из корня проекта):**
+**1. Установите sidecar как CLI-инструмент:**
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r sidecar/requirements.txt
+.venv/bin/pip install -e ./sidecar
+```
+
+**2. Создайте каркас агента (директория + `agent.py` + мастер `.env`):**
+```bash
+.venv/bin/sidecar scaffold my-agent --capability translate
+cd my-agent
+# отредактируйте agent.py — только бизнес-логику
+```
+
+**3. Установите как systemd-сервис:**
+```bash
+sudo .venv/bin/sidecar service --name my-agent install --env-file my-agent/.env
+```
+
+Готово. Сервис запущен и автоматически стартует при ребуте.
+
+---
+
+## Ручная настройка
+
+**1. Создайте venv и установите зависимости:**
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e ./sidecar
 .venv/bin/pip install -r agents-examples/translator/requirements.txt  # или зависимости вашего агента
 ```
 
-**2. Создайте `.env` в директории агента:**
+**2. Создайте `.env` через мастер:**
+```bash
+.venv/bin/sidecar init --output my-agent/.env
+```
+
+Или создайте `.env` вручную:
 ```env
 AGENT_COMMAND=python agent.py
 AGENT_CAPABILITY=translate
@@ -72,7 +101,7 @@ AGENT_PRICE=10000000        # в nanotons (0.01 TON); убрать или пос
 AGENT_PRICE_USD=1000000     # в micro-USDT (1 000 000 = 1 USDT); убрать — отключить USDT-рейл
 AGENT_ENDPOINT=https://my-agent.example.com # ip или домен сервера с запущенным sidecar
 AGENT_WALLET_PK=<приватный ключ>
-REGISTRY_ADDRESS=<предоставляется организаторами>
+REGISTRY_ADDRESS=<адрес контракта реестра>
 
 # Опционально
 PORT=8080 # порт на котором sidecar будет слушать HTTP запросы
@@ -110,55 +139,55 @@ path-traversal и симлинк-побеги.
 
 **3. Проверьте конфигурацию:**
 ```bash
-.venv/bin/python sidecar/sidecar.py doctor --env-file .env
+.venv/bin/sidecar doctor --env-file my-agent/.env
 ```
 
 ---
 
 ## Запуск
 
-Все команды выполняются из корня проекта.
-
 **Разово / режим разработки:**
 ```bash
-.venv/bin/python sidecar/sidecar.py run --env-file agents-examples/translator/.env
+.venv/bin/sidecar run --env-file agents-examples/translator/.env
 ```
 
 **Тестнет:**
 ```bash
-TESTNET=true .venv/bin/python sidecar/sidecar.py run --env-file .env
+TESTNET=true .venv/bin/sidecar run --env-file .env
 ```
 
 **Как systemd сервис (продакшн):**
 ```bash
-sudo .venv/bin/python sidecar/sidecar.py service install \
+sudo .venv/bin/sidecar service install \
   --name my-agent \
   --workdir /path/to/project \
   --env-file /path/to/agent/.env
 ```
 
-Стартует сразу и автоматически перезапускается при ребуте.
+Имя сервиса в systemd будет `my-agent-ctlx-agent.service`. Стартует сразу и автоматически перезапускается при ребуте.
 
 ---
 
 ## Управление сервисом
 
+Если установлен только один агент, `--name` можно не указывать — он определяется автоматически.
+
 ```bash
 # Статус
-.venv/bin/python sidecar/sidecar.py service status --name my-agent
+.venv/bin/sidecar service status --name my-agent
 
 # Логи (в реальном времени)
-.venv/bin/python sidecar/sidecar.py service logs --name my-agent -f
+.venv/bin/sidecar service logs --name my-agent -f
 
 # Логи (последние 100 строк)
-.venv/bin/python sidecar/sidecar.py service logs --name my-agent --lines 100
+.venv/bin/sidecar service logs --name my-agent --lines 100
 
 # Рестарт / остановка
-.venv/bin/python sidecar/sidecar.py service restart --name my-agent
-.venv/bin/python sidecar/sidecar.py service stop --name my-agent
+.venv/bin/sidecar service restart --name my-agent
+.venv/bin/sidecar service stop --name my-agent
 
 # Удалить сервис
-sudo .venv/bin/python sidecar/sidecar.py service uninstall --name my-agent
+sudo .venv/bin/sidecar service uninstall --name my-agent
 ```
 
 > Если агент не отправляет heartbeat более 7 дней — он исчезает из маркетплейса.
