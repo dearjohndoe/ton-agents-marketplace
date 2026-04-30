@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 import os
-import shutil
 import time
 import uuid
 from pathlib import Path
@@ -43,6 +42,13 @@ from api.domain.quoting import (
 from api.domain.pricing import resolve_sku, sku_price
 from api.domain.refund import refund_user as _refund_user
 from api.domain.invocation import create_runner
+from api.infra.cleanup import cleanup_loop as _cleanup_loop
+from api.infra.files import (
+    cleanup_expired_files,
+    cleanup_file,
+    cleanup_uploaded_files,
+)
+from api.infra.rate_limit import cleanup_rate_limits
 
 logger = logging.getLogger("sidecar")
 
@@ -213,18 +219,7 @@ class SidecarApp:
         await self.stock.close()
 
     async def cleanup_loop(self) -> None:
-        while not self.stop_event.is_set():
-            await self.jobs.cleanup()
-            self._cleanup_expired_files()
-            self._cleanup_rate_limits()
-            try:
-                await self.stock.sweep_expired()
-            except Exception:
-                logger.exception("Stock sweep failed")
-            try:
-                await asyncio.wait_for(self.stop_event.wait(), timeout=60)
-            except asyncio.TimeoutError:
-                pass
+        await _cleanup_loop(self)
 
     # ── Dynamic pricing ────────────────────────────────────────────────
 
@@ -288,49 +283,16 @@ class SidecarApp:
         return safe_extract_result(record_result, self._file_store, self._file_store_dir, self._file_store_ttl)
 
     def _cleanup_file(self, file_id: str) -> None:
-        entry = self._file_store.pop(file_id, None)
-        if entry:
-            try:
-                Path(entry["path"]).unlink(missing_ok=True)
-            except Exception:
-                logger.warning("Failed to delete file %s", entry["path"])
+        cleanup_file(self._file_store, file_id)
 
     def _cleanup_expired_files(self) -> None:
-        now = time.time()
-        expired = [fid for fid, entry in self._file_store.items() if entry["expires_at"] <= now]
-        for fid in expired:
-            self._cleanup_file(fid)
+        cleanup_expired_files(self._file_store)
 
     def _cleanup_uploaded_files(self, uploaded_files: dict[str, Path]) -> None:
-        """Remove upload directories created by _parse_multipart_invoke.
-
-        Called on every handle_invoke error path that runs before the agent
-        subprocess takes ownership of the files — without this, multipart
-        uploads that hit a validation/verification error would accumulate on
-        disk forever.
-        """
-        for file_path in uploaded_files.values():
-            try:
-                shutil.rmtree(file_path.parent, ignore_errors=True)
-            except Exception:
-                logger.warning("Failed to cleanup uploaded file dir %s", file_path.parent)
+        cleanup_uploaded_files(uploaded_files)
 
     def _cleanup_rate_limits(self) -> None:
-        """Drop rate-limit entries whose every timestamp is stale.
-
-        Without this sweep, self.rate_limits grows unboundedly as new IPs
-        connect — the middleware only filters a key's history when that same
-        IP makes another request, so rotating source IPs is a slow-drip
-        memory leak. Called from cleanup_loop on a timer.
-        """
-        cutoff = time.time() - self.settings.rate_limit_window
-        stale = [
-            ip
-            for ip, history in self.rate_limits.items()
-            if not history or all(ts <= cutoff for ts in history)
-        ]
-        for ip in stale:
-            self.rate_limits.pop(ip, None)
+        cleanup_rate_limits(self.rate_limits, self.settings.rate_limit_window)
 
     @staticmethod
     def _is_out_of_stock_result(raw: dict[str, Any]) -> bool:
