@@ -56,6 +56,7 @@ from api.http.routes import register_routes
 from api.http.handlers.image import handle_image as _handle_image
 from api.http.handlers.info import handle_info as _handle_info
 from api.http.handlers.invoke import handle_invoke as _handle_invoke
+from api.http.handlers.quote import handle_quote as _handle_quote
 from api.http.handlers.result import handle_download as _handle_download
 from api.http.handlers.result import handle_result as _handle_result
 
@@ -317,107 +318,7 @@ class SidecarApp:
         cleanup_expired_quotes(self.quotes)
 
     async def handle_quote(self, request: web.Request) -> web.Response:
-        if not self.settings.has_quote:
-            return web.json_response({"error": "This agent does not support quotes"}, status=404)
-
-        try:
-            if request.content_type and "multipart/form-data" in request.content_type:
-                _, _, capability, _, _, sku_field, body, _ = await self._parse_multipart_invoke(request)
-            else:
-                data = await request.json()
-                capability = str(data.get("capability", "")).strip()
-                sku_field = str(data.get("sku", "")).strip() or None
-                body = data.get("body", {})
-        except Exception:
-            return web.json_response({"error": "Invalid request"}, status=400)
-
-        if not capability:
-            return web.json_response({"error": "capability is required"}, status=400)
-
-        if capability != self.settings.capability:
-            return web.json_response({"error": "Unsupported capability"}, status=400)
-
-        sku, sku_err = self._resolve_sku(sku_field)
-        if sku_err is not None:
-            return sku_err
-        assert sku is not None
-
-        missing = validate_body({"body": body}, self.args_schema)
-        if missing:
-            return web.json_response({"error": "Missing required fields", "missing": missing}, status=400)
-
-        # Pre-check stock before calling agent — cheap rejection path.
-        view = await self.stock.get_view(sku.sku_id)
-        if view.stock_left is not None and view.stock_left <= 0:
-            return web.json_response(
-                {"error": "out_of_stock", "sku": sku.sku_id}, status=409,
-            )
-
-        quote_payload = {
-            "mode": "quote",
-            "capability": capability,
-            "sku": sku.sku_id,
-            "body": body,
-        }
-
-        try:
-            agent_result = await api.run_agent_subprocess(
-                command=self.settings.agent_command,
-                payload=quote_payload,
-                timeout_seconds=self.settings.sync_timeout,
-                env={"OWN_SIDECAR_ID": self.sidecar_id},
-            )
-        except Exception:
-            logger.exception("Quote subprocess failed")
-            return web.json_response({"error": "Quote generation failed"}, status=500)
-
-        price = agent_result.get("price")
-        plan = agent_result.get("plan", "")
-        note = agent_result.get("note")
-        ttl = int(agent_result.get("ttl", DEFAULT_QUOTE_TTL))
-
-        if not isinstance(price, int) or price <= 0:
-            return web.json_response({"error": "Agent returned invalid price"}, status=500)
-
-        price_usdt = agent_result.get("price_usdt")
-        if price_usdt is not None and (not isinstance(price_usdt, int) or price_usdt <= 0):
-            price_usdt = None
-
-        self._cleanup_expired_quotes()
-
-        quote_id = str(uuid.uuid4())
-        expires_at = time.time() + ttl
-
-        # Reserve stock for this quote. Use payment_timeout as TTL — user has
-        # that long to pay before the reservation is swept.
-        reserve_ttl = max(ttl, self.settings.payment_timeout)
-        try:
-            ok = await self.stock.reserve(sku.sku_id, quote_id, reserve_ttl)
-        except Exception:
-            logger.exception("stock.reserve failed during quote")
-            return web.json_response({"error": "Internal stock error"}, status=500)
-        if not ok:
-            return web.json_response(
-                {"error": "out_of_stock", "sku": sku.sku_id}, status=409,
-            )
-
-        self.quotes[quote_id] = QuoteEntry(
-            price=price, expires_at=expires_at, sku_id=sku.sku_id, price_usdt=price_usdt,
-        )
-
-        resp: dict[str, Any] = {
-            "quote_id": quote_id,
-            "price": price,
-            "plan": plan,
-            "sku": sku.sku_id,
-            "expires_at": int(expires_at),
-        }
-        if price_usdt:
-            resp["price_usdt"] = price_usdt
-        if note:
-            resp["note"] = note
-
-        return web.json_response(resp)
+        return await _handle_quote(request, self)
 
     async def handle_invoke(self, request: web.Request) -> web.Response:
         return await _handle_invoke(request, self)
