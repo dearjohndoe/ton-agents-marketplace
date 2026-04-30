@@ -49,6 +49,10 @@ from api.infra.files import (
     cleanup_uploaded_files,
 )
 from api.infra.rate_limit import cleanup_rate_limits
+from api.http.middleware import make_cors_middleware, make_rate_limit_middleware
+from api.http.multipart import parse_multipart_invoke
+from api.http.responses import render_done_response
+from api.http.routes import register_routes
 
 logger = logging.getLogger("sidecar")
 
@@ -330,45 +334,7 @@ class SidecarApp:
     async def _parse_multipart_invoke(
         self, request: web.Request
     ) -> tuple[str, str, str, str | None, str, str | None, dict[str, Any], dict[str, Path]]:
-        """Parse multipart/form-data invoke request.
-
-        Returns: (tx_hash, nonce, capability, quote_id, rail, sku, body_dict, uploaded_files)
-        """
-        reader = await request.multipart()
-        tx_hash = nonce = capability = ""
-        quote_id: str | None = None
-        rail = "TON"
-        sku: str | None = None
-        body: dict[str, Any] = {}
-        uploaded_files: dict[str, Path] = {}
-
-        async for part in reader:
-            name = part.name
-            if name == "tx":
-                tx_hash = (await part.text()).strip()
-            elif name == "nonce":
-                nonce = (await part.text()).strip()
-            elif name == "capability":
-                capability = (await part.text()).strip()
-            elif name == "quote_id":
-                quote_id = (await part.text()).strip() or None
-            elif name == "rail":
-                rail = (await part.text()).strip().upper() or "TON"
-            elif name == "sku":
-                sku = (await part.text()).strip() or None
-            elif name == "body_json":
-                body = json.loads(await part.text())
-            elif name and name.startswith("file:"):
-                field_name = name[5:]  # strip "file:" prefix
-                file_data = await part.read(decode=False)
-                original_name = Path(part.filename or "").name or f"{uuid.uuid4().hex}.bin"
-                upload_dir = self._file_store_dir / "uploads" / uuid.uuid4().hex
-                upload_dir.mkdir(parents=True, exist_ok=True)
-                file_path = upload_dir / original_name
-                file_path.write_bytes(file_data)
-                uploaded_files[field_name] = file_path
-
-        return tx_hash, nonce, capability, quote_id, rail, sku, body, uploaded_files
+        return await parse_multipart_invoke(request, self._file_store_dir)
 
     def _cleanup_expired_quotes(self) -> None:
         cleanup_expired_quotes(self.quotes)
@@ -770,23 +736,9 @@ class SidecarApp:
         return web.json_response({"job_id": job_id, "status": "pending"})
 
     def _render_done_response(self, job_id: str, record_result: Any) -> web.Response:
-        """Translate a done job's payload into HTTP response, recognizing out_of_stock."""
-        # Recognize runner-produced refund record without running it through
-        # _process_file_result (it's already a plain dict, not an agent result).
-        if isinstance(record_result, dict):
-            inner = record_result.get("result") if isinstance(record_result.get("result"), dict) else None
-            if isinstance(inner, dict) and inner.get("status") == "refunded_out_of_stock":
-                return web.json_response({
-                    "job_id": job_id,
-                    "status": "refunded_out_of_stock",
-                    "reason": inner.get("reason"),
-                    "refund_tx": inner.get("refund_tx"),
-                })
-
-        final_res, extract_err = self._safe_extract_result(record_result)
-        if extract_err:
-            return web.json_response({"job_id": job_id, "status": "error", "error": extract_err}, status=500)
-        return web.json_response({"job_id": job_id, "status": "done", "result": final_res})
+        return render_done_response(
+            job_id, record_result, self._file_store, self._file_store_dir, self._file_store_ttl,
+        )
 
     async def handle_result(self, request: web.Request) -> web.Response:
         job_id = request.match_info["job_id"]
@@ -899,64 +851,15 @@ class SidecarApp:
         return web.json_response(info)
 
     def build_web_app(self) -> web.Application:
-        @web.middleware
-        async def cors_middleware(request: web.Request, handler):
-            cors_headers = {
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-                "Access-Control-Allow-Headers": "*",
-                "Access-Control-Max-Age": "86400",
-            }
-            if request.method == "OPTIONS":
-                return web.Response(status=204, headers=cors_headers)
-            response = await handler(request)
-            response.headers.update(cors_headers)
-            return response
-
-        @web.middleware
-        async def rate_limit_middleware(request: web.Request, handler):
-            if request.method == "OPTIONS" or request.path == "/info" or request.path.startswith("/download/"):
-                return await handler(request)
-
-            remote = request.remote or ""
-            if remote and self.settings.trusted_proxy_ips and remote in self.settings.trusted_proxy_ips:
-                ip = (request.headers.get("X-Forwarded-For") or remote).split(",")[0].strip()
-            else:
-                ip = remote or "unknown"
-
-            now = time.time()
-            cutoff = now - self.settings.rate_limit_window
-
-            # Fast cleanup and check
-            history = self.rate_limits.get(ip, [])
-            history = [ts for ts in history if ts > cutoff]
-
-            if len(history) >= self.settings.rate_limit_requests:
-                return web.json_response({
-                    "error": "Too many requests",
-                    "retry_after": int(history[0] - cutoff)
-                }, status=429)
-
-            history.append(now)
-            self.rate_limits[ip] = history
-
-            return await handler(request)
-
         max_upload_mb = int(os.environ.get("MAX_UPLOAD_SIZE_MB", "150"))
         app = web.Application(
             client_max_size=1024 * 1024 * max_upload_mb,
-            middlewares=[cors_middleware, rate_limit_middleware],
+            middlewares=[
+                make_cors_middleware(),
+                make_rate_limit_middleware(self.settings, self.rate_limits),
+            ],
         )
-        app.add_routes(
-            [
-                web.post("/invoke", self.handle_invoke),
-                web.post("/quote", self.handle_quote),
-                web.get("/result/{job_id}", self.handle_result),
-                web.get("/download/{file_id}", self.handle_download),
-                web.get("/images/{name}", self.handle_image),
-                web.get("/info", self.handle_info),
-            ]
-        )
+        register_routes(app, self)
         app.on_startup.append(lambda _: self.startup())
         app.on_shutdown.append(lambda _: self.shutdown())
         return app
