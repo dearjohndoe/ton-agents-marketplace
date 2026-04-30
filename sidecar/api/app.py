@@ -53,6 +53,10 @@ from api.http.middleware import make_cors_middleware, make_rate_limit_middleware
 from api.http.multipart import parse_multipart_invoke
 from api.http.responses import render_done_response
 from api.http.routes import register_routes
+from api.http.handlers.image import handle_image as _handle_image
+from api.http.handlers.info import handle_info as _handle_info
+from api.http.handlers.result import handle_download as _handle_download
+from api.http.handlers.result import handle_result as _handle_result
 
 logger = logging.getLogger("sidecar")
 
@@ -250,35 +254,7 @@ class SidecarApp:
     # ── File store helpers ──────────────────────────────────────────
 
     async def handle_image(self, request: web.Request) -> web.StreamResponse:
-        name = request.match_info.get("name", "")
-        # Defence in depth — aiohttp already strips path segments, but keep explicit check.
-        if not name or "/" in name or "\\" in name or name.startswith("."):
-            return web.Response(status=404)
-
-        ext = Path(name).suffix.lower()
-        mime = IMAGE_EXT_MIME.get(ext)
-        if mime is None:
-            return web.Response(status=404)
-
-        raw = self._images_dir / name
-        if raw.is_symlink():
-            return web.Response(status=404)
-        path = raw.resolve()
-        try:
-            path.relative_to(self._images_dir)
-        except ValueError:
-            return web.Response(status=404)
-        if not path.is_file():
-            return web.Response(status=404)
-
-        return web.FileResponse(
-            path,
-            headers={
-                "Content-Type": mime,
-                "Cache-Control": "public, max-age=86400",
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
+        return await _handle_image(request, self._images_dir)
 
     def _process_file_result(self, result: dict[str, Any]) -> dict[str, Any]:
         return process_file_result(result, self._file_store, self._file_store_dir, self._file_store_ttl)
@@ -741,114 +717,13 @@ class SidecarApp:
         )
 
     async def handle_result(self, request: web.Request) -> web.Response:
-        job_id = request.match_info["job_id"]
-        record = await self.jobs.get(job_id)
-        if record is None:
-            return web.json_response({"error": "Job not found"}, status=404)
-
-        if record.status == "done":
-            return self._render_done_response(job_id, record.result)
-
-        response: dict[str, Any] = {"status": record.status}
-        if record.error is not None:
-            response["error"] = record.error
-        return web.json_response(response)
+        return await _handle_result(request, self)
 
     async def handle_download(self, request: web.Request) -> web.Response:
-        file_id = request.match_info["file_id"]
-        entry = self._file_store.get(file_id)
+        return await _handle_download(request, self._file_store)
 
-        if entry is None:
-            return web.json_response({"error": "File not found"}, status=404)
-
-        if time.time() > entry["expires_at"]:
-            self._cleanup_file(file_id)
-            return web.json_response({"error": "File expired"}, status=410)
-
-        file_path = Path(entry["path"])
-        if not file_path.exists():
-            return web.json_response({"error": "File not found on disk"}, status=404)
-
-        return web.Response(
-            body=file_path.read_bytes(),
-            content_type=entry["mime_type"],
-            headers={
-                "Content-Disposition": f'inline; filename="{entry["file_name"]}"',
-            },
-        )
-
-    async def handle_info(self, _: web.Request) -> web.Response:
-        rails = list(self.settings.payment_rails)
-
-        info: dict[str, Any] = {
-            "name": self.settings.agent_name,
-            "description": self.settings.agent_description,
-            "capabilities": [self.settings.capability],
-            "price": self.settings.agent_price,
-            "args_schema": self.args_schema,
-            "result_schema": self.result_schema,
-            "sidecar_id": self.sidecar_id,
-            "endpoint": self.settings.agent_endpoint,
-            "payment_rails": rails,
-        }
-        if self.settings.has_quote:
-            info["has_quote"] = True
-        if self.settings.agent_price_usdt:
-            info["price_usdt"] = self.settings.agent_price_usdt
-
-        # Always emit skus[] so clients can drive per-SKU UI. Legacy single-SKU
-        # agents still see price/price_usdt top-level (populated from that SKU).
-        try:
-            views = await self.stock.list_views()
-        except Exception:
-            logger.exception("stock.list_views failed")
-            views = []
-
-        # Fetch dynamic prices if any SKU uses ton=0 and usd=0 as the dynamic sentinel.
-        dynamic_prices: dict[str, dict[str, int]] = {}
-        if self._has_dynamic_skus:
-            try:
-                dynamic_prices = await self._fetch_dynamic_prices()
-            except Exception:
-                logger.exception("Dynamic price fetch failed for /info")
-
-        skus_payload: list[dict[str, Any]] = []
-        for v in views:
-            entry: dict[str, Any] = {
-                "id": v.sku_id,
-                "title": v.title,
-            }
-            sku_obj = self._skus_by_id.get(v.sku_id)
-            dp = dynamic_prices.get(v.sku_id, {})
-            is_dynamic = sku_obj is not None and sku_obj.price_ton == 0 and sku_obj.price_usd == 0
-
-            price_ton = dp.get("ton", None if is_dynamic else v.price_ton)
-            price_usd = dp.get("usd", None if is_dynamic else v.price_usd)
-
-            if price_ton is not None:
-                entry["price_ton"] = price_ton
-            if price_usd is not None:
-                entry["price_usd"] = price_usd
-            if v.stock_left is not None:
-                entry["stock_left"] = v.stock_left
-            if v.total is not None:
-                entry["total"] = v.total
-                entry["sold"] = v.sold
-            skus_payload.append(entry)
-        if skus_payload:
-            info["skus"] = skus_payload
-
-        from heartbeat import _valid_image_url
-        if self.settings.agent_preview_url and _valid_image_url(self.settings.agent_preview_url):
-            info["preview_url"] = self.settings.agent_preview_url
-        if self.settings.agent_avatar_url and _valid_image_url(self.settings.agent_avatar_url):
-            info["avatar_url"] = self.settings.agent_avatar_url
-        if self.settings.agent_images:
-            from heartbeat import MAX_IMAGES
-            images = [img for img in self.settings.agent_images if _valid_image_url(img)]
-            if images:
-                info["images"] = images[:MAX_IMAGES]
-        return web.json_response(info)
+    async def handle_info(self, request: web.Request) -> web.Response:
+        return await _handle_info(request, self)
 
     def build_web_app(self) -> web.Application:
         max_upload_mb = int(os.environ.get("MAX_UPLOAD_SIZE_MB", "150"))
