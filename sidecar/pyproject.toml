@@ -20,4 +20,8 @@ wallet-gen = ["pytoniq_core"]
 sidecar = "sidecar:main"
 
 [tool.setuptools]
-py-modules = ["sidecar", "cli", "api", "settings", "heartbeat", "jetton", "jobs", "stock", "storage", "transfer", "verify"]
+py-modules = ["sidecar", "cli", "api", "settings", "heartbeat", "jetton", "jobs", "stock", "storage", "transfer"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["payments*"]

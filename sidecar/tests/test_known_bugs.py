@@ -29,7 +29,7 @@ import transfer as transfer_module
 from api import SidecarApp
 from settings import AgentSku, DEFAULT_SKU_ID, Settings
 from transfer import TransferSender
-from verify import PaymentVerificationError, ProcessedTxStore, VerifiedPayment
+from payments import PaymentVerificationError, ProcessedTxStore, VerifiedPayment
 
 
 # ── Shared settings/app builders (subset of test_api.py) ───────────────

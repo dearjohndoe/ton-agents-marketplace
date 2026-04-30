@@ -17,7 +17,7 @@ from heartbeat import HeartbeatConfig, HeartbeatManager
 from jobs import JobStore, run_agent_subprocess
 from storage import StateStore
 from transfer import TransferSender, refund_body
-from verify import PaymentVerificationError, PaymentVerifier, JettonPaymentVerifier, ProcessedTxStore, parse_nonce
+from payments import PaymentVerificationError, PaymentVerifier, JettonPaymentVerifier, ProcessedTxStore, parse_nonce
 from jetton import USDT_MASTER_MAINNET, USDT_MASTER_TESTNET, USDT_REFUND_FEE
 from settings import Settings, AgentSku, DEFAULT_SKU_ID
 from stock import StockStore

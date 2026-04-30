@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+
+from tonutils.clients import LiteBalancer
+from tonutils.types import NetworkGlobalID
+
+from .nonce import _parse_payment_nonce, parse_nonce
+from .ton_monitor import WalletMonitor
+from .types import PaymentVerificationError, VerifiedPayment
+
+logger = logging.getLogger(__name__)
+
+
+class PaymentVerifier:
+    VERIFY_TIMEOUT = 15   # seconds to wait for tx to appear on-chain
+    VERIFY_POLL    = 0.5  # seconds between cache re-checks while waiting
+
+    def __init__(
+        self,
+        agent_wallet: str,
+        min_amount: int,
+        payment_timeout_seconds: int,
+        enforce_comment_nonce: bool = True,
+        testnet: bool = False,
+    ) -> None:
+        self._agent_wallet = agent_wallet
+        self._min_amount = min_amount
+        self._payment_timeout = payment_timeout_seconds
+        self._enforce_comment_nonce = enforce_comment_nonce
+        self._network = NetworkGlobalID.TESTNET if testnet else NetworkGlobalID.MAINNET
+        self._client: LiteBalancer | None = None
+        self._monitor: WalletMonitor | None = None
+
+    async def start(self) -> None:
+        self._client = LiteBalancer.from_network_config(self._network)
+        await self._client.connect()
+        self._monitor = WalletMonitor(self._client, self._agent_wallet)
+        await self._monitor.start()
+        logger.info("PaymentVerifier started (testnet=%s)", self._network == NetworkGlobalID.TESTNET)
+
+    async def close(self) -> None:
+        if self._monitor:
+            await self._monitor.stop()
+            self._monitor = None
+        if self._client:
+            await self._client.close()
+            self._client = None
+
+    async def verify(self, tx_hash: str, raw_nonce: str, min_amount: int | None = None) -> VerifiedPayment:
+        if self._monitor is None:
+            raise RuntimeError("PaymentVerifier not started")
+
+        nonce = parse_nonce(raw_nonce)
+        required_amount = min_amount if min_amount is not None else self._min_amount
+        deadline = time.time() + self.VERIFY_TIMEOUT
+
+        while True:
+            tx = self._monitor.get(nonce.value)
+
+            if tx is not None:
+                now_ts = int(time.time())
+                if now_ts - tx.now > self._payment_timeout:
+                    raise PaymentVerificationError("Payment session expired")
+
+                try:
+                    sender = tx.in_msg.info.src.to_str(is_user_friendly=True, is_bounceable=False)
+                except Exception:
+                    sender = ""
+
+                try:
+                    amount = int(tx.in_msg.info.value.grams)
+                except Exception:
+                    amount = 0
+
+                if amount < required_amount:
+                    raise PaymentVerificationError("Transaction amount is lower than required price")
+
+                if not sender:
+                    raise PaymentVerificationError("Transaction sender is missing")
+
+                comment = _parse_payment_nonce(tx.in_msg.body)
+                # Evict nonce from cache and use the on-chain tx hash (not user-supplied)
+                # to prevent replay attacks with fake tx_hash values.
+                self._monitor.consume(nonce.value)
+                real_tx_hash = tx.cell.hash.hex()
+                return VerifiedPayment(
+                    tx_hash=real_tx_hash,
+                    sender=sender,
+                    recipient=self._agent_wallet,
+                    amount=amount,
+                    comment=comment,
+                )
+
+            if time.time() >= deadline:
+                raise PaymentVerificationError("Transaction not found")
+
+            # Not in cache yet — force an immediate poll, then wait before retrying
+            self._monitor.force()
+            await asyncio.sleep(self.VERIFY_POLL)

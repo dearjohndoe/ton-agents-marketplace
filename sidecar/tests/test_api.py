@@ -20,7 +20,7 @@ from aiohttp.test_utils import TestClient, TestServer
 import api as api_module
 from api import QuoteEntry, SidecarApp, fetch_describe, validate_body
 from settings import AgentSku, DEFAULT_SKU_ID, Settings
-from verify import PaymentVerificationError, VerifiedPayment
+from payments import PaymentVerificationError, VerifiedPayment
 
 
 # ── Settings factory ───────────────────────────────────────────────────
