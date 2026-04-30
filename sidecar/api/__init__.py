@@ -17,7 +17,8 @@ from api.constants import (
 )
 from api.describe import fetch_describe
 from api.validation import validate_body
-from api.app import QuoteEntry, SidecarApp
+from api.domain.quoting import QuoteEntry
+from api.app import SidecarApp
 
 __all__ = [
     "SidecarApp",

@@ -7,24 +7,22 @@ import os
 import shutil
 import time
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from aiohttp import web
 
-import api  # late binding for monkeypatched run_agent_subprocess
 from heartbeat import HeartbeatConfig, HeartbeatManager
 from jobs import JobStore
 from storage import StateStore
-from transfer import TransferSender, refund_body
+from transfer import TransferSender
 from payments import PaymentVerificationError, PaymentVerifier, JettonPaymentVerifier, ProcessedTxStore, parse_nonce
-from jetton import USDT_MASTER_MAINNET, USDT_MASTER_TESTNET, USDT_REFUND_FEE
+from jetton import USDT_MASTER_MAINNET, USDT_MASTER_TESTNET
 from settings import Settings, AgentSku, DEFAULT_SKU_ID  # noqa: F401 — re-exported via api package
 from stock import StockStore
 
+import api  # late binding for monkeypatched run_agent_subprocess
 from api.constants import (
     DESCRIBE_TIMEOUT,
-    DYNAMIC_PRICE_CACHE_TTL,
     DEFAULT_QUOTE_TTL,
     IMAGE_EXT_MIME,
 )
@@ -35,17 +33,18 @@ from api.domain.result_processing import (
     process_file_result,
     safe_extract_result,
 )
+from api.domain.quoting import (
+    DynamicPriceCache,
+    QuoteEntry,
+    cleanup_expired_quotes,
+    fetch_dynamic_prices,
+    has_dynamic_skus,
+)
+from api.domain.pricing import resolve_sku, sku_price
+from api.domain.refund import refund_user as _refund_user
+from api.domain.invocation import create_runner
 
 logger = logging.getLogger("sidecar")
-
-
-@dataclass
-class QuoteEntry:
-    price: int
-    expires_at: float  # unix timestamp
-    sku_id: str
-    price_usdt: int | None = None
-    locked: bool = False
 
 
 class SidecarApp:
@@ -88,9 +87,7 @@ class SidecarApp:
         self.stop_event = asyncio.Event()
         self.sidecar_id: str = ""
         # Dynamic pricing cache (populated via agent mode=prices when SKU price==0)
-        self._dynamic_prices: dict[str, dict[str, int]] = {}
-        self._dynamic_prices_ts: float = 0.0
-        self._dynamic_prices_lock: asyncio.Lock | None = None
+        self._dynamic_prices_cache = DynamicPriceCache()
         self.heartbeat = HeartbeatManager(
             config=HeartbeatConfig(
                 registry_address=settings.registry_address,
@@ -118,44 +115,17 @@ class SidecarApp:
     async def refund_user(
         self, recipient: str, payment_amount: int, original_tx_hash: str, reason: str, rail: str = "TON",
     ) -> str | None:
-        """Send refund back to `recipient`. Returns refund tx hash on success, None otherwise."""
-        if rail == "USDT":
-            refund_amount = max(payment_amount - USDT_REFUND_FEE, 0)
-            if refund_amount <= 0:
-                logger.warning(
-                    "USDT refund skipped: amount too small after fee",
-                    extra={"tx_hash": original_tx_hash, "payment_amount": payment_amount},
-                )
-                return None
-            try:
-                fwd = refund_body(original_tx_hash, reason, self.sidecar_id)
-                return await self.sender.send_jetton(
-                    own_jetton_wallet=self._agent_jetton_wallet or "",
-                    destination=recipient,
-                    jetton_amount=refund_amount,
-                    forward_payload=fwd,
-                )
-            except Exception:
-                logger.exception("Failed to send USDT refund")
-                return None
-
-        refund_amount = max(payment_amount - self.settings.refund_fee_nanoton, 0)
-        if refund_amount <= 0:
-            logger.warning(
-                "Refund skipped because amount is not enough after fee",
-                extra={
-                    "tx_hash": original_tx_hash,
-                    "payment_amount": payment_amount,
-                    "refund_fee": self.settings.refund_fee_nanoton,
-                },
-            )
-            return None
-
-        try:
-            return await self.sender.send(recipient, refund_amount, refund_body(original_tx_hash, reason, self.sidecar_id))
-        except Exception:
-            logger.exception("Failed to send refund")
-            return None
+        return await _refund_user(
+            sender=self.sender,
+            agent_jetton_wallet=self._agent_jetton_wallet,
+            sidecar_id=self.sidecar_id,
+            refund_fee_nanoton=self.settings.refund_fee_nanoton,
+            recipient=recipient,
+            payment_amount=payment_amount,
+            original_tx_hash=original_tx_hash,
+            reason=reason,
+            rail=rail,
+        )
 
     async def startup(self) -> None:
         state = self.state_store.load()
@@ -260,66 +230,23 @@ class SidecarApp:
 
     @property
     def _has_dynamic_skus(self) -> bool:
-        return any(s.price_ton == 0 and s.price_usd == 0 for s in self.settings.skus)
+        return has_dynamic_skus(self.settings.skus)
 
     async def _fetch_dynamic_prices(self) -> dict[str, dict[str, int]]:
-        """Call agent mode=prices and cache result for DYNAMIC_PRICE_CACHE_TTL seconds.
-
-        Returns dict: sku_id -> {"ton": nanoton, "usd": microusd}.
-        """
-        if self._dynamic_prices_lock is None:
-            self._dynamic_prices_lock = asyncio.Lock()
-        now = time.time()
-        async with self._dynamic_prices_lock:
-            if self._dynamic_prices and now - self._dynamic_prices_ts < DYNAMIC_PRICE_CACHE_TTL:
-                return self._dynamic_prices
-            try:
-                result = await api.run_agent_subprocess(
-                    command=self.settings.agent_command,
-                    payload={"mode": "prices"},
-                    timeout_seconds=self.settings.sync_timeout,
-                    env={"OWN_SIDECAR_ID": self.sidecar_id},
-                )
-                prices = result.get("prices")
-                if isinstance(prices, dict):
-                    self._dynamic_prices = {
-                        k: v for k, v in prices.items() if isinstance(v, dict)
-                    }
-                    self._dynamic_prices_ts = now
-                    logger.debug("Dynamic prices refreshed: %s", list(self._dynamic_prices.keys()))
-            except Exception:
-                logger.exception("Failed to fetch dynamic prices from agent")
-        return self._dynamic_prices
+        return await fetch_dynamic_prices(
+            self._dynamic_prices_cache,
+            agent_command=self.settings.agent_command,
+            sync_timeout=self.settings.sync_timeout,
+            sidecar_id=self.sidecar_id,
+        )
 
     # ── SKU resolution ─────────────────────────────────────────────
 
     def _resolve_sku(self, sku_field: str | None) -> tuple[AgentSku | None, web.Response | None]:
-        """Pick SKU from an explicit id. Falls back to single-SKU agent default.
-
-        Returns (sku, None) on success, (None, error_response) on failure.
-        """
-        requested = (sku_field or "").strip()
-        if requested:
-            sku = self._skus_by_id.get(requested)
-            if sku is None:
-                return None, web.json_response(
-                    {"error": "Unknown SKU", "sku": requested}, status=400,
-                )
-            return sku, None
-
-        if self._single_sku is not None:
-            return self._single_sku, None
-
-        return None, web.json_response(
-            {"error": "sku is required (multiple SKUs configured)",
-             "available_skus": [s.sku_id for s in self.settings.skus]},
-            status=400,
-        )
+        return resolve_sku(sku_field, self._skus_by_id, self._single_sku, self.settings.skus)
 
     def _sku_price(self, sku: AgentSku, rail: str) -> int | None:
-        if rail == "USDT":
-            return sku.price_usd
-        return sku.price_ton
+        return sku_price(sku, rail)
 
     # ── File store helpers ──────────────────────────────────────────
 
@@ -423,85 +350,20 @@ class SidecarApp:
         rail: str = "TON",
         reservation_key: str | None = None,
     ):
-        async def runner() -> dict[str, Any]:
-            try:
-                raw = await api.run_agent_subprocess(
-                    command=self.settings.agent_command,
-                    payload=agent_payload,
-                    timeout_seconds=self.settings.final_timeout,
-                    env={
-                        "OWN_SIDECAR_ID": self.sidecar_id,
-                        "CALLER_ADDRESS": sender,
-                        "CALLER_TX_HASH": tx_hash,
-                        "PAYMENT_RAIL": rail,
-                    },
-                )
-
-                if is_out_of_stock_result(raw):
-                    reason = str(raw.get("reason") or "agent reported out of stock")
-                    refund_tx = await self.refund_user(
-                        recipient=sender,
-                        payment_amount=amount,
-                        original_tx_hash=tx_hash,
-                        reason="out_of_stock",
-                        rail=rail,
-                    )
-                    if reservation_key:
-                        try:
-                            await self.stock.agent_out_of_stock(reservation_key)
-                        except Exception:
-                            logger.exception("agent_out_of_stock bookkeeping failed")
-                    # Return a special "done" record — handle_invoke / handle_result
-                    # render it as refunded_out_of_stock to the caller.
-                    return {
-                        "result": {
-                            "status": "refunded_out_of_stock",
-                            "reason": reason,
-                            "refund_tx": refund_tx,
-                        }
-                    }
-
-                validate_result_structure(raw)
-                if reservation_key:
-                    try:
-                        await self.stock.commit_sold(reservation_key, tx_hash)
-                    except Exception:
-                        logger.exception("commit_sold failed (agent succeeded but stock bookkeeping broke)")
-                return raw
-            except Exception as exc:
-                if isinstance(exc, TimeoutError):
-                    short_reason = "timeout"
-                elif isinstance(exc, ValueError):
-                    short_reason = "invalid_response"
-                elif isinstance(exc, RuntimeError):
-                    short_reason = "execution_failed"
-                else:
-                    short_reason = "internal_error"
-
-                try:
-                    await self.refund_user(
-                        recipient=sender,
-                        payment_amount=amount,
-                        original_tx_hash=tx_hash,
-                        reason=short_reason,
-                        rail=rail,
-                    )
-                except Exception:
-                    logger.exception("Refund sub-task failed inside runner")
-                if reservation_key:
-                    try:
-                        await self.stock.release(reservation_key)
-                    except Exception:
-                        logger.exception("stock.release failed inside runner")
-                raise
-            finally:
-                if uploaded_files:
-                    for file_path in uploaded_files.values():
-                        try:
-                            shutil.rmtree(file_path.parent, ignore_errors=True)
-                        except Exception:
-                            logger.warning("Failed to cleanup uploaded file dir %s", file_path.parent)
-        return runner
+        return create_runner(
+            refund_user=self.refund_user,
+            stock=self.stock,
+            agent_command=self.settings.agent_command,
+            final_timeout=self.settings.final_timeout,
+            sidecar_id=self.sidecar_id,
+            agent_payload=agent_payload,
+            sender=sender,
+            amount=amount,
+            tx_hash=tx_hash,
+            uploaded_files=uploaded_files,
+            rail=rail,
+            reservation_key=reservation_key,
+        )
 
     async def _parse_multipart_invoke(
         self, request: web.Request
@@ -547,10 +409,7 @@ class SidecarApp:
         return tx_hash, nonce, capability, quote_id, rail, sku, body, uploaded_files
 
     def _cleanup_expired_quotes(self) -> None:
-        now = time.time()
-        expired = [qid for qid, entry in self.quotes.items() if entry.expires_at <= now]
-        for qid in expired:
-            del self.quotes[qid]
+        cleanup_expired_quotes(self.quotes)
 
     async def handle_quote(self, request: web.Request) -> web.Response:
         if not self.settings.has_quote:
