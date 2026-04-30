@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 import os
@@ -13,19 +12,31 @@ from pathlib import Path
 from typing import Any
 from aiohttp import web
 
+import api  # late binding for monkeypatched run_agent_subprocess
 from heartbeat import HeartbeatConfig, HeartbeatManager
-from jobs import JobStore, run_agent_subprocess
+from jobs import JobStore
 from storage import StateStore
 from transfer import TransferSender, refund_body
 from payments import PaymentVerificationError, PaymentVerifier, JettonPaymentVerifier, ProcessedTxStore, parse_nonce
 from jetton import USDT_MASTER_MAINNET, USDT_MASTER_TESTNET, USDT_REFUND_FEE
-from settings import Settings, AgentSku, DEFAULT_SKU_ID
+from settings import Settings, AgentSku, DEFAULT_SKU_ID  # noqa: F401 — re-exported via api package
 from stock import StockStore
 
-logger = logging.getLogger("sidecar")
+from api.constants import (
+    DESCRIBE_TIMEOUT,
+    DYNAMIC_PRICE_CACHE_TTL,
+    DEFAULT_QUOTE_TTL,
+    IMAGE_EXT_MIME,
+)
+from api.describe import fetch_describe
+from api.validation import validate_body, validate_result_structure
+from api.domain.result_processing import (
+    is_out_of_stock_result,
+    process_file_result,
+    safe_extract_result,
+)
 
-DESCRIBE_TIMEOUT = 10  # seconds
-DYNAMIC_PRICE_CACHE_TTL = 60  # seconds
+logger = logging.getLogger("sidecar")
 
 
 @dataclass
@@ -35,56 +46,6 @@ class QuoteEntry:
     sku_id: str
     price_usdt: int | None = None
     locked: bool = False
-
-
-DEFAULT_QUOTE_TTL = 120  # seconds
-
-
-async def fetch_describe(command: str, timeout: int, sidecar_id: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    """Call the agent with mode=describe and return (args_schema, result_schema)."""
-    try:
-        result = await run_agent_subprocess(
-            command=command,
-            payload={"mode": "describe"},
-            timeout_seconds=timeout,
-            env={"OWN_SIDECAR_ID": sidecar_id},
-        )
-        args_schema = result.get("args_schema")
-        if not isinstance(args_schema, dict):
-            raise RuntimeError("Agent describe response missing valid args_schema")
-        result_schema = result.get("result_schema")
-        if result_schema is not None and not isinstance(result_schema, dict):
-            result_schema = None
-        return args_schema, result_schema
-    except Exception as exc:
-        logger.critical("Critical error: Agent failed to respond to describe mode: %s", exc)
-        raise RuntimeError(f"Agent must return valid args_schema on startup. Error: {exc}")
-
-
-def validate_body(
-    payload: dict[str, Any],
-    args_schema: dict[str, Any],
-    has_tx: bool = False,
-    uploaded_files: dict[str, Path] | None = None,
-) -> list[str]:
-    body = payload.get("body")
-    if not isinstance(body, dict):
-        body = {}
-
-    missing: list[str] = []
-    for field, spec in args_schema.items():
-        if not spec.get("required"):
-            continue
-        if spec.get("type") == "file":
-            # Skip file validation on preflight (no tx) — file not sent yet
-            if not has_tx:
-                continue
-            if uploaded_files and field in uploaded_files:
-                continue
-            missing.append(field)
-        elif field not in body:
-            missing.append(field)
-    return missing
 
 
 class SidecarApp:
@@ -313,7 +274,7 @@ class SidecarApp:
             if self._dynamic_prices and now - self._dynamic_prices_ts < DYNAMIC_PRICE_CACHE_TTL:
                 return self._dynamic_prices
             try:
-                result = await run_agent_subprocess(
+                result = await api.run_agent_subprocess(
                     command=self.settings.agent_command,
                     payload={"mode": "prices"},
                     timeout_seconds=self.settings.sync_timeout,
@@ -362,18 +323,6 @@ class SidecarApp:
 
     # ── File store helpers ──────────────────────────────────────────
 
-    _MIME_EXT: dict[str, str] = {
-        "image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif",
-        "image/webp": ".webp", "audio/wav": ".wav", "audio/mpeg": ".mp3",
-        "audio/ogg": ".ogg", "video/mp4": ".mp4", "video/webm": ".webm",
-        "application/pdf": ".pdf",
-    }
-
-    _IMAGE_EXT_MIME: dict[str, str] = {
-        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-        ".gif": "image/gif", ".webp": "image/webp",
-    }
-
     async def handle_image(self, request: web.Request) -> web.StreamResponse:
         name = request.match_info.get("name", "")
         # Defence in depth — aiohttp already strips path segments, but keep explicit check.
@@ -381,7 +330,7 @@ class SidecarApp:
             return web.Response(status=404)
 
         ext = Path(name).suffix.lower()
-        mime = self._IMAGE_EXT_MIME.get(ext)
+        mime = IMAGE_EXT_MIME.get(ext)
         if mime is None:
             return web.Response(status=404)
 
@@ -406,61 +355,10 @@ class SidecarApp:
         )
 
     def _process_file_result(self, result: dict[str, Any]) -> dict[str, Any]:
-        """If result is type=file with base64 data, store to disk and replace with download URL."""
-        if result.get("type") != "file":
-            return result
-        if "data" not in result:
-            # Agent declared type=file but sent no payload — surface the
-            # contract violation instead of silently forwarding a broken
-            # result to the caller.
-            raise ValueError("File result is missing required 'data' field")
-
-        raw_data = result["data"]
-        if not isinstance(raw_data, str) or not raw_data:
-            raise ValueError("File result 'data' must be a non-empty base64 string")
-
-        file_id = uuid.uuid4().hex
-        mime_type = result.get("mime_type", "application/octet-stream")
-        ext = self._MIME_EXT.get(mime_type, "")
-        file_name = result.get("file_name") or f"{file_id[:12]}{ext}"
-
-        try:
-            file_bytes = base64.b64decode(raw_data)
-        except Exception as exc:
-            raise ValueError(f"File result contains invalid base64 data: {exc}") from exc
-
-        if not file_bytes:
-            raise ValueError("File result decoded to empty bytes")
-
-        file_path = self._file_store_dir / f"{file_id}{ext}"
-        file_path.write_bytes(file_bytes)
-
-        expires_at = time.time() + self._file_store_ttl
-        self._file_store[file_id] = {
-            "path": str(file_path),
-            "mime_type": mime_type,
-            "file_name": file_name,
-            "expires_at": expires_at,
-        }
-
-        return {
-            "type": "file",
-            "url": f"/download/{file_id}",
-            "mime_type": mime_type,
-            "file_name": file_name,
-            "expires_in": self._file_store_ttl,
-        }
+        return process_file_result(result, self._file_store, self._file_store_dir, self._file_store_ttl)
 
     def _safe_extract_result(self, record_result: Any) -> tuple[dict[str, Any] | Any, str | None]:
-        """Extract and process agent result safely. Returns (result, error_or_none)."""
-        try:
-            final_res = record_result.get("result", record_result) if isinstance(record_result, dict) else record_result
-            if isinstance(final_res, dict):
-                final_res = self._process_file_result(final_res)
-            return final_res, None
-        except Exception as exc:
-            logger.exception("Failed to process agent result")
-            return None, "Failed to process agent result"
+        return safe_extract_result(record_result, self._file_store, self._file_store_dir, self._file_store_ttl)
 
     def _cleanup_file(self, file_id: str) -> None:
         entry = self._file_store.pop(file_id, None)
@@ -509,16 +407,11 @@ class SidecarApp:
 
     @staticmethod
     def _is_out_of_stock_result(raw: dict[str, Any]) -> bool:
-        return isinstance(raw, dict) and str(raw.get("error", "")).strip() == "out_of_stock"
+        return is_out_of_stock_result(raw)
 
     @staticmethod
     def _validate_result_structure(raw: dict[str, Any]) -> None:
-        """Ensure agent result has the required {type, data} structure."""
-        result = raw.get("result")
-        if not isinstance(result, dict):
-            raise ValueError("Agent result must be a JSON object with 'type' and 'data' keys")
-        if "type" not in result or "data" not in result:
-            raise ValueError("Agent result must contain 'type' and 'data' keys")
+        validate_result_structure(raw)
 
     def _create_runner(
         self,
@@ -532,7 +425,7 @@ class SidecarApp:
     ):
         async def runner() -> dict[str, Any]:
             try:
-                raw = await run_agent_subprocess(
+                raw = await api.run_agent_subprocess(
                     command=self.settings.agent_command,
                     payload=agent_payload,
                     timeout_seconds=self.settings.final_timeout,
@@ -544,7 +437,7 @@ class SidecarApp:
                     },
                 )
 
-                if self._is_out_of_stock_result(raw):
+                if is_out_of_stock_result(raw):
                     reason = str(raw.get("reason") or "agent reported out of stock")
                     refund_tx = await self.refund_user(
                         recipient=sender,
@@ -568,7 +461,7 @@ class SidecarApp:
                         }
                     }
 
-                self._validate_result_structure(raw)
+                validate_result_structure(raw)
                 if reservation_key:
                     try:
                         await self.stock.commit_sold(reservation_key, tx_hash)
@@ -704,7 +597,7 @@ class SidecarApp:
         }
 
         try:
-            agent_result = await run_agent_subprocess(
+            agent_result = await api.run_agent_subprocess(
                 command=self.settings.agent_command,
                 payload=quote_payload,
                 timeout_seconds=self.settings.sync_timeout,
@@ -763,8 +656,6 @@ class SidecarApp:
         return web.json_response(resp)
 
     async def handle_invoke(self, request: web.Request) -> web.Response:
-        from aiohttp import web
-
         uploaded_files: dict[str, Path] = {}
         # Flip to True once the runner takes ownership of uploaded_files —
         # until then, any early return must clean them up so validation /
@@ -1077,8 +968,6 @@ class SidecarApp:
         return web.json_response({"job_id": job_id, "status": "done", "result": final_res})
 
     async def handle_result(self, request: web.Request) -> web.Response:
-        from aiohttp import web
-
         job_id = request.match_info["job_id"]
         record = await self.jobs.get(job_id)
         if record is None:
@@ -1116,8 +1005,6 @@ class SidecarApp:
         )
 
     async def handle_info(self, _: web.Request) -> web.Response:
-        from aiohttp import web
-
         rails = list(self.settings.payment_rails)
 
         info: dict[str, Any] = {
@@ -1191,8 +1078,6 @@ class SidecarApp:
         return web.json_response(info)
 
     def build_web_app(self) -> web.Application:
-        from aiohttp import web
-
         @web.middleware
         async def cors_middleware(request: web.Request, handler):
             cors_headers = {
