@@ -391,3 +391,110 @@ async def test_heartbeat_loop_respects_configured_interval(tmp_state_path):
         "HeartbeatManager.loop() does not reference self._interval — the "
         "configured interval is ignored"
     )
+
+
+# ────────────────────────────────────────────────────────────────────────
+# BUG 6 — jetton_verifier not created for dynamic USDT SKUs (price_usd=0)
+# ────────────────────────────────────────────────────────────────────────
+
+def test_jetton_verifier_created_for_dynamic_usdt_sku(tmp_path):
+    """SidecarApp must create jetton_verifier when any SKU has price_usd=0 (dynamic).
+
+    BUG: the constructor checked ``if settings.agent_price_usdt:`` which is
+    falsy when agent_price_usdt==0 (dynamic USDT pricing sentinel).  A SKU
+    with price_usd=0 passes the sku.price_usd-is-None guard at invoke time,
+    so a user could pay with USDT, hit the ``jetton_verifier is None`` branch,
+    receive "USDT payments not configured" (HTTP 400) and lose their funds
+    with no refund or meaningful error log.
+
+    Fix: use ``any(s.price_usd is not None for s in settings.skus)`` so the
+    verifier is always created when the USDT rail is declared.
+    """
+    dynamic_usdt_sku = AgentSku(
+        sku_id="dynamic", title="dynamic",
+        price_ton=0, price_usd=0,
+        initial_stock=None,
+    )
+    settings = _make_settings(
+        tmp_path,
+        skus=(dynamic_usdt_sku,),
+        agent_price=0,
+        agent_price_usdt=0,
+        payment_rails=("TON", "USDT"),
+    )
+    app = SidecarApp(settings)
+    assert app.jetton_verifier is not None, (
+        "jetton_verifier must be created when SKU has price_usd=0 (dynamic USDT); "
+        "if None, USDT payments are silently rejected with no refund"
+    )
+
+
+# ────────────────────────────────────────────────────────────────────────
+# BUG 7 — USDT payment accepted with min_amount=0 when dynamic price missing
+# ────────────────────────────────────────────────────────────────────────
+
+async def test_usdt_payment_rejected_when_price_unavailable(tmp_path, monkeypatch):
+    """USDT execution must return 503 when dynamic price fetch returned no USD price.
+
+    BUG: for a dynamic SKU (price_ton=0, price_usd=0), if the agent's price
+    response omits the USD field, eff_usd stays 0.  jetton_verifier.verify()
+    was then called with min_amount=0, meaning any incoming USDT amount would
+    pass verification — the agent accepted payment without knowing the price.
+
+    Fix: when rail=USDT and min_amount_usdt==0 on the execution path, return
+    503 "USDT price unavailable" before calling verify().
+    """
+    import api as api_module
+    from aiohttp.test_utils import TestClient, TestServer
+    from unittest.mock import AsyncMock
+
+    dynamic_sku = AgentSku(
+        sku_id="dyn", title="dyn",
+        price_ton=0, price_usd=0,
+        initial_stock=None,
+    )
+    settings = _make_settings(
+        tmp_path,
+        skus=(dynamic_sku,),
+        agent_price=0,
+        agent_price_usdt=0,
+        payment_rails=("TON", "USDT"),
+    )
+    app = SidecarApp(settings)
+    app.sidecar_id = "sid-test"
+    app.args_schema = {"text": {"type": "string", "required": True}}
+    app._file_store_dir.mkdir(parents=True, exist_ok=True)
+
+    # Agent returns TON price only — no USD
+    async def fake_run(**kwargs):
+        return {"prices": {"dyn": {"ton": 1_000_000}}}
+
+    monkeypatch.setattr(api_module, "run_agent_subprocess", fake_run)
+
+    async def noop():
+        app._file_store_dir.mkdir(parents=True, exist_ok=True)
+        await app.stock.init(app.settings.skus)
+
+    app.startup = noop  # type: ignore[method-assign]
+    app.shutdown = noop  # type: ignore[method-assign]
+    web_app = app.build_web_app()
+    web_app.on_startup.clear()
+    web_app.on_shutdown.clear()
+    web_app.on_startup.append(lambda _: noop())
+    web_app.on_shutdown.append(lambda _: noop())
+
+    app.tx_store.is_processed = AsyncMock(return_value=False)
+
+    async with TestClient(TestServer(web_app)) as c:
+        resp = await c.post("/invoke", json={
+            "capability": "translate",
+            "tx": "some-usdt-tx",
+            "nonce": "abc:sid-test",
+            "rail": "USDT",
+            "body": {"text": "hello"},
+        })
+        assert resp.status == 503, (
+            f"Expected 503 when USDT price unavailable, got {resp.status}"
+        )
+        data = await resp.json()
+        assert "unavailable" in data.get("error", "").lower()

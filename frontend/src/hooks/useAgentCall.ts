@@ -26,6 +26,7 @@ export function useAgentCall(
   const [selectedRail, setSelectedRail] = useState<string>(() =>
     agent.price > 0 ? 'TON' : agent.priceUsdt ? 'USDT' : 'TON'
   )
+  const [paymentRails, setPaymentRails] = useState<string[]>([])
   const [connMode, setConnMode] = useState<ConnectionMode>(() => getConnectionMode(agent.endpoint))
   const [skus, setSkus] = useState<Sku[]>([])
   const [selectedSkuId, setSelectedSkuId] = useState<string>('')
@@ -53,6 +54,13 @@ export function useAgentCall(
       .then(info => {
         if (cancelled) return
         setSkus(info.skus)
+        setPaymentRails(info.paymentRails)
+        // Reset rail if the current selection isn't supported by this agent.
+        if (info.paymentRails.length > 0) {
+          setSelectedRail(prev =>
+            info.paymentRails.includes(prev) ? prev : (info.paymentRails[0] ?? 'TON')
+          )
+        }
         // Default selection: first in-stock sku, falling back to first.
         const firstAvail = info.skus.find(s => s.stockLeft == null || s.stockLeft > 0)
         setSelectedSkuId(prev => prev || firstAvail?.id || info.skus[0]?.id || '')
@@ -133,12 +141,13 @@ export function useAgentCall(
       preflightOptions = preflight.paymentOptions
       setPaymentOptions(preflightOptions)
 
-      // Pick the selected rail option, fallback to first available
-      const chosen = preflightOptions.find(o => o.rail === rail) ?? preflightOptions[0]
-      if (chosen) {
-        rail = chosen.rail
-        paymentRequest = { address: chosen.address, amount: chosen.amount, nonce: chosen.memo, rail: chosen.rail }
+      const chosen = preflightOptions.find(o => o.rail === rail)
+      if (!chosen) {
+        const available = preflightOptions.map(o => o.rail).join(', ')
+        throw new Error(`Rail "${rail}" not offered by agent for this SKU. Available: ${available || 'none'}`)
       }
+      rail = chosen.rail
+      paymentRequest = { address: chosen.address, amount: chosen.amount, nonce: chosen.memo, rail: chosen.rail }
     } catch (err: any) {
       setStatus('error')
       const data = err?.response?.data
@@ -253,7 +262,7 @@ export function useAgentCall(
     status, result, errorMsg,
     quote, quoteSecondsLeft,
     lastNonce, connMode,
-    paymentOptions, selectedRail, setSelectedRail,
+    paymentOptions, selectedRail, setSelectedRail, paymentRails,
     skus, skusLoading, selectedSkuId, setSelectedSkuId, selectedSku,
     refundReason, refundTx,
     busy, hasSchema,

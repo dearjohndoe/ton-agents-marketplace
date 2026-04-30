@@ -115,12 +115,12 @@ class SidecarApp:
         )
         self.jetton_verifier: JettonPaymentVerifier | None = None
         self._agent_jetton_wallet: str | None = None
-        if settings.agent_price_usdt:
+        if any(s.price_usd is not None for s in settings.skus):
             usdt_master = USDT_MASTER_TESTNET if settings.testnet else USDT_MASTER_MAINNET
             self.jetton_verifier = JettonPaymentVerifier(
                 agent_wallet=settings.agent_wallet,
                 usdt_master=usdt_master,
-                min_amount=settings.agent_price_usdt,
+                min_amount=settings.agent_price_usdt or 0,
                 payment_timeout_seconds=settings.payment_timeout,
                 testnet=settings.testnet,
             )
@@ -924,7 +924,19 @@ class SidecarApp:
                     if not self.jetton_verifier:
                         if quote_id and quote_id in self.quotes:
                             self.quotes[quote_id].locked = False
+                        logger.critical(
+                            "USDT payment received but jetton_verifier is not configured — "
+                            "tx=%s nonce=%s — payment requires manual refund",
+                            tx_hash, nonce,
+                        )
                         return web.json_response({"error": "USDT payments not configured"}, status=400)
+                    if min_amount_usdt == 0:
+                        if quote_id and quote_id in self.quotes:
+                            self.quotes[quote_id].locked = False
+                        return web.json_response(
+                            {"error": "USDT price unavailable for this SKU", "sku": sku.sku_id},
+                            status=503,
+                        )
                     verified_payment = await self.jetton_verifier.verify(
                         tx_hash=tx_hash, raw_nonce=nonce, min_amount=min_amount_usdt,
                     )

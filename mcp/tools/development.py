@@ -60,7 +60,7 @@ ENV_EXAMPLE_TEMPLATE = '''\
 AGENT_COMMAND=$SIDECAR_PYTHON agent.py
 AGENT_CAPABILITY={capability}
 AGENT_NAME={name}
-AGENT_DESCRIPTION={description}
+AGENT_DESCRIPTION={description_escaped}
 AGENT_PRICE={price}
 AGENT_ENDPOINT=https://your-server.example.com
 AGENT_WALLET_PK=0x...your_private_key_hex...
@@ -126,10 +126,12 @@ def register_development_tools(mcp: FastMCP) -> None:
             quote_block=quote_block,
         )
         (agent_dir / "agent.py").write_text(agent_code)
+        desc_escaped = description.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+        desc_line = f'"{desc_escaped}"' if ("\n" in description or '"' in description) else description
         (agent_dir / ".env.example").write_text(ENV_EXAMPLE_TEMPLATE.format(
             capability=capability,
             name=name,
-            description=description,
+            description_escaped=desc_line,
             price=price,
             has_quote=str(has_quote).lower(),
         ))
