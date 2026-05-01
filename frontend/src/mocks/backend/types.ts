@@ -3,6 +3,7 @@ export type AgentBehavior =
   | { kind: 'success'; result: any; delayMs?: number }
   | { kind: 'error'; message: string; delayMs?: number }
   | { kind: 'out_of_stock'; reason: string; delayMs?: number }
+  | { kind: 'refunded'; reasonCode: string; reason: string; delayMs?: number }
   | { kind: 'timeout'; delayMs?: number } // never finishes
 
 export interface SkuFixture {
@@ -74,9 +75,10 @@ export interface JobRecord {
   finishAt: number
   outcome: AgentBehavior
   result?: any
-  status: 'pending' | 'done' | 'error' | 'refunded_out_of_stock'
+  status: 'pending' | 'done' | 'error' | 'refunded'
   error?: string
   reason?: string
+  reasonCode?: string
   refundTx?: string
 }
 

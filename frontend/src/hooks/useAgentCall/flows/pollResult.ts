@@ -2,7 +2,7 @@ import { pollResult } from '../../../lib/agentClient'
 
 export interface PollHandlers {
   onDone: (result: any) => void
-  onRefund: (reason: string, refundTx: string) => void
+  onRefund: (reason: string, reasonCode: string, refundTx: string) => void
   onError: (message: string) => void
 }
 
@@ -18,8 +18,8 @@ export function startPolling(
       if (r.status === 'pending') return
       clearInterval(id)
       if (r.status === 'done') handlers.onDone(r.result)
-      else if (r.status === 'refunded_out_of_stock')
-        handlers.onRefund(r.reason ?? '', r.refundTx ?? '')
+      else if (r.status === 'refunded')
+        handlers.onRefund(r.reason ?? '', r.reasonCode ?? '', r.refundTx ?? '')
       else handlers.onError(r.error ?? 'Error')
     } catch {
       clearInterval(id)

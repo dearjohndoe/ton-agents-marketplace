@@ -56,10 +56,11 @@ function resolveUrl(endpoint: string, path: string): { url: string; headers?: Re
 
 export interface InvokeResult {
   jobId: string
-  status: 'done' | 'pending' | 'error' | 'refunded_out_of_stock'
+  status: 'done' | 'pending' | 'error' | 'refunded'
   result?: TypedResult
   error?: string
   reason?: string
+  reasonCode?: string
   refundTx?: string
 }
 
@@ -166,7 +167,7 @@ export async function invokeAgent(
   return {
     jobId: data.job_id, status: data.status,
     result: data.result, error: data.error,
-    reason: data.reason, refundTx: data.refund_tx,
+    reason: data.reason, reasonCode: data.reason_code, refundTx: data.refund_tx,
   }
 }
 
@@ -176,7 +177,7 @@ export async function pollResult(endpoint: string, jobId: string): Promise<Invok
   return {
     jobId, status: data.status,
     result: data.result, error: data.error,
-    reason: data.reason, refundTx: data.refund_tx,
+    reason: data.reason, reasonCode: data.reason_code, refundTx: data.refund_tx,
   }
 }
 

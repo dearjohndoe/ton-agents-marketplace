@@ -23,6 +23,7 @@ export function useCallState(agent: Agent) {
   const [selectedSkuId, setSelectedSkuId] = useState<string>('')
   const [skusLoading, setSkusLoading] = useState(false)
   const [refundReason, setRefundReason] = useState('')
+  const [refundReasonCode, setRefundReasonCode] = useState('')
   const [refundTx, setRefundTx] = useState('')
   const [infoRefreshNonce, setInfoRefreshNonce] = useState(0)
   const pollCancelRef = useRef<(() => void) | null>(null)
@@ -45,6 +46,7 @@ export function useCallState(agent: Agent) {
     selectedSkuId, setSelectedSkuId,
     skusLoading, setSkusLoading,
     refundReason, setRefundReason,
+    refundReasonCode, setRefundReasonCode,
     refundTx, setRefundTx,
     infoRefreshNonce, setInfoRefreshNonce,
     pollCancelRef, countdownRef,

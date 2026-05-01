@@ -1,13 +1,14 @@
 import { TESTNET } from '../../config'
 
-export function RefundedBlock({ reason, refundTx, onReset }: {
+export function RefundedBlock({ reason, reasonCode: _reasonCode, refundTx, onReset }: {
   reason: string
+  reasonCode: string
   refundTx: string
   onReset: () => void
 }) {
   return (
     <div className="result-box result-box--refund">
-      <span className="meta-label">Refunded — out of stock</span>
+      <span className="meta-label">Refunded</span>
       {reason && <p className="refund-reason">{reason}</p>}
       {refundTx && (
         <p className="refund-tx">
@@ -20,7 +21,7 @@ export function RefundedBlock({ reason, refundTx, onReset }: {
           </a>
         </p>
       )}
-      <button className="btn btn-outline btn-sm" onClick={onReset}>Try another variant</button>
+      <button className="btn btn-outline btn-sm" onClick={onReset}>Try again</button>
     </div>
   )
 }

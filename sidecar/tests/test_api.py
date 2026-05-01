@@ -611,9 +611,11 @@ async def test_invoke_agent_runtime_error_triggers_refund(client, monkeypatch):
             "body": {"text": "hello"},
         },
     )
-    assert resp.status == 500
+    assert resp.status == 200
     data = await resp.json()
-    assert data["status"] == "error"
+    assert data["status"] == "refunded"
+    assert data["reason_code"] == "execution_failed"
+    assert data["refund_tx"] == "REFUND_HASH"
     # Refund was issued back to the sender.
     await asyncio.sleep(0.05)
     app.sender.send.assert_awaited()
@@ -952,7 +954,8 @@ async def test_invoke_out_of_stock_from_agent_refunds_and_reports(app_factory, t
         })
         assert resp.status == 200
         data = await resp.json()
-        assert data["status"] == "refunded_out_of_stock"
+        assert data["status"] == "refunded"
+        assert data["reason_code"] == "out_of_stock"
         assert data["reason"] == "banned before delivery"
         assert data["refund_tx"] == "REFUND_HASH"
 
@@ -983,7 +986,12 @@ async def test_invoke_agent_failure_releases_reservation(app_factory, tmp_path, 
             "capability": "translate", "tx": "u", "nonce": "n:sid-test",
             "body": {"text": "hi"},
         })
-        assert resp.status == 500
+        # Refund succeeded → runner reports refunded, not error.
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["status"] == "refunded"
+        assert data["reason_code"] == "execution_failed"
+        assert data["refund_tx"] == "REFUND_HASH"
         await asyncio.sleep(0.05)
         view = await app.stock.get_view("default")
         # Stock untouched — total still 3, nothing reserved or sold.

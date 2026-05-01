@@ -67,18 +67,22 @@ export function useAgentCall(
 
     const res = inv.value
     if (res.status === 'done') { s.setResult(res.result); s.setStatus('done') }
-    else if (res.status === 'refunded_out_of_stock') {
-      s.setRefundReason(res.reason ?? ''); s.setRefundTx(res.refundTx ?? '')
-      s.setStatus('refunded_out_of_stock')
+    else if (res.status === 'refunded') {
+      s.setRefundReason(res.reason ?? '')
+      s.setRefundReasonCode(res.reasonCode ?? '')
+      s.setRefundTx(res.refundTx ?? '')
+      s.setStatus('refunded')
     } else if (res.status === 'error') {
       s.setStatus('error'); s.setErrorMsg(res.error ?? 'Agent returned an error')
     } else {
       s.setStatus('polling')
       s.pollCancelRef.current = startPolling(agent.endpoint, res.jobId, {
         onDone: (r) => { s.setResult(r); s.setStatus('done') },
-        onRefund: (reason, tx) => {
-          s.setRefundReason(reason); s.setRefundTx(tx)
-          s.setStatus('refunded_out_of_stock')
+        onRefund: (reason, reasonCode, tx) => {
+          s.setRefundReason(reason)
+          s.setRefundReasonCode(reasonCode)
+          s.setRefundTx(tx)
+          s.setStatus('refunded')
         },
         onError: (msg) => { s.setStatus('error'); s.setErrorMsg(msg) },
       })
@@ -89,7 +93,7 @@ export function useAgentCall(
     s.pollCancelRef.current?.(); s.pollCancelRef.current = null
     s.setStatus('idle'); s.setResult(null); s.setQuote(null)
     s.setLastNonce(''); s.setPaymentOptions([])
-    s.setRefundReason(''); s.setRefundTx('')
+    s.setRefundReason(''); s.setRefundReasonCode(''); s.setRefundTx('')
   }
 
   function resetQuote() { s.setStatus('idle'); s.setQuote(null) }
@@ -109,7 +113,7 @@ export function useAgentCall(
     skus: s.skus, skusLoading: s.skusLoading,
     selectedSkuId: s.selectedSkuId, setSelectedSkuId: s.setSelectedSkuId,
     selectedSku,
-    refundReason: s.refundReason, refundTx: s.refundTx,
+    refundReason: s.refundReason, refundReasonCode: s.refundReasonCode, refundTx: s.refundTx,
     busy, hasSchema,
     handleGetQuote, handleSubmit, reset, resetQuote,
   }

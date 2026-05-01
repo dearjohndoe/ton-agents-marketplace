@@ -12,6 +12,16 @@ from api.validation import validate_result_structure
 logger = logging.getLogger("sidecar")
 
 
+def _exc_to_reason_code(exc: BaseException) -> str:
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    if isinstance(exc, ValueError):
+        return "invalid_response"
+    if isinstance(exc, RuntimeError):
+        return "execution_failed"
+    return "internal_error"
+
+
 def create_runner(
     *,
     refund_user: Callable[..., Awaitable[str | None]],
@@ -55,11 +65,10 @@ def create_runner(
                         await stock.agent_out_of_stock(reservation_key)
                     except Exception:
                         logger.exception("agent_out_of_stock bookkeeping failed")
-                # Return a special "done" record — handle_invoke / handle_result
-                # render it as refunded_out_of_stock to the caller.
                 return {
                     "result": {
-                        "status": "refunded_out_of_stock",
+                        "status": "refunded",
+                        "reason_code": "out_of_stock",
                         "reason": reason,
                         "refund_tx": refund_tx,
                     }
@@ -73,21 +82,16 @@ def create_runner(
                     logger.exception("commit_sold failed (agent succeeded but stock bookkeeping broke)")
             return raw
         except Exception as exc:
-            if isinstance(exc, TimeoutError):
-                short_reason = "timeout"
-            elif isinstance(exc, ValueError):
-                short_reason = "invalid_response"
-            elif isinstance(exc, RuntimeError):
-                short_reason = "execution_failed"
-            else:
-                short_reason = "internal_error"
+            reason_code = _exc_to_reason_code(exc)
+            human_reason = str(exc) or reason_code
 
+            refund_tx: str | None = None
             try:
-                await refund_user(
+                refund_tx = await refund_user(
                     recipient=sender,
                     payment_amount=amount,
                     original_tx_hash=tx_hash,
-                    reason=short_reason,
+                    reason=reason_code,
                     rail=rail,
                 )
             except Exception:
@@ -97,6 +101,16 @@ def create_runner(
                     await stock.release(reservation_key)
                 except Exception:
                     logger.exception("stock.release failed inside runner")
+
+            if refund_tx:
+                return {
+                    "result": {
+                        "status": "refunded",
+                        "reason_code": reason_code,
+                        "reason": human_reason,
+                        "refund_tx": refund_tx,
+                    }
+                }
             raise
         finally:
             if uploaded_files:

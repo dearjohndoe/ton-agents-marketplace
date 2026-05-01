@@ -30,3 +30,6 @@ orchestrator.log
 .claude
 skills-lock.json
 __pycache__
+
+# Python package metadata
+*.egg-info/

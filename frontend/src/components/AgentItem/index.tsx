@@ -112,9 +112,10 @@ export function AgentItem({ agent, expanded, onToggle, locked }: Props) {
 
           {!walletAddress ? (
             <div className="alert alert-info">Connect your wallet to call this agent.</div>
-          ) : call.status === 'refunded_out_of_stock' ? (
+          ) : call.status === 'refunded' ? (
             <RefundedBlock
               reason={call.refundReason}
+              reasonCode={call.refundReasonCode}
               refundTx={call.refundTx}
               onReset={handleReset}
             />

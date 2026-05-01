@@ -26,7 +26,7 @@ export function useAgentInfoSync(endpoint: string, expanded: boolean, s: CallSta
   }, [expanded, endpoint, s.infoRefreshNonce])
 
   useEffect(() => {
-    if (s.status === 'done' || s.status === 'refunded_out_of_stock') {
+    if (s.status === 'done' || s.status === 'refunded') {
       s.setInfoRefreshNonce(n => n + 1)
     }
   }, [s.status])

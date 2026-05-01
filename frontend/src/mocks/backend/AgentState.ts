@@ -363,7 +363,17 @@ export class AgentState {
         if (s && s.total != null) s.total = Math.max(0, s.total - 1)
       }
       this.reservations.delete(job.reservationKey)
-      job.status = 'refunded_out_of_stock'
+      job.status = 'refunded'
+      job.reasonCode = 'out_of_stock'
+      job.reason = o.reason
+      job.refundTx = FAKE_REFUND_TX()
+      this.onPersist?.()
+      return
+    }
+    if (o.kind === 'refunded') {
+      this.reservations.delete(job.reservationKey)
+      job.status = 'refunded'
+      job.reasonCode = o.reasonCode
       job.reason = o.reason
       job.refundTx = FAKE_REFUND_TX()
       this.onPersist?.()
@@ -373,10 +383,11 @@ export class AgentState {
 
   private _jobResponse(job: JobRecord) {
     if (job.status === 'done') return { job_id: job.jobId, status: 'done', result: job.result }
-    if (job.status === 'refunded_out_of_stock')
+    if (job.status === 'refunded')
       return {
         job_id: job.jobId,
-        status: 'refunded_out_of_stock',
+        status: 'refunded',
+        reason_code: job.reasonCode,
         reason: job.reason,
         refund_tx: job.refundTx,
       }

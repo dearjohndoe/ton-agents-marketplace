@@ -4,7 +4,7 @@ import { nanoToTon, microToUsdt } from './utils'
 export function PriceBadge({ agent }: { agent: Agent }) {
   const hasTon = agent.price > 0
   const hasUsdt = agent.priceUsdt != null && agent.priceUsdt > 0
-  if (!hasTon && !hasUsdt) return <span>--</span>
+  if (!hasTon && !hasUsdt) return <span>Dynamic price</span>
   return (
     <>
       {hasTon && <span className="price-ton">{nanoToTon(agent.price)} TON</span>}
