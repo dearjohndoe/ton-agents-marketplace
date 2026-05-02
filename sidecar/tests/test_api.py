@@ -402,10 +402,12 @@ async def test_info_handler_returns_metadata(client):
     assert resp.status == 200
     data = await resp.json()
     assert data["name"] == "Translator"
-    assert data["price"] == 1_000_000
     assert data["capabilities"] == ["translate"]
     assert data["sidecar_id"] == "sid-test"
     assert "args_schema" in data
+    # Per-SKU prices live under skus[]; legacy top-level price/price_usdt are gone.
+    assert "price" not in data
+    assert data["skus"][0]["price_ton"] == 1_000_000
 
 
 async def test_options_request_returns_cors_204(client):

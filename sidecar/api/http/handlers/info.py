@@ -21,7 +21,6 @@ async def handle_info(_: web.Request, sidecar: "SidecarApp") -> web.Response:
         "name": settings.agent_name,
         "description": settings.agent_description,
         "capabilities": [settings.capability],
-        "price": settings.agent_price,
         "args_schema": sidecar.args_schema,
         "result_schema": sidecar.result_schema,
         "sidecar_id": sidecar.sidecar_id,
@@ -30,8 +29,6 @@ async def handle_info(_: web.Request, sidecar: "SidecarApp") -> web.Response:
     }
     if settings.has_quote:
         info["has_quote"] = True
-    if settings.agent_price_usdt:
-        info["price_usdt"] = settings.agent_price_usdt
 
     # Always emit skus[] so clients can drive per-SKU UI. Legacy single-SKU
     # agents still see price/price_usdt top-level (populated from that SKU).

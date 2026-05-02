@@ -19,9 +19,16 @@ def register(mcp: FastMCP) -> None:
         result_type: str,
         result_mime_type: str | None = None,
         has_quote: bool = False,
+        price_usd: int | None = None,
         directory: str | None = None,
     ) -> dict:
         """Generate a new agent skeleton with all required files.
+
+        Generates a single SKU `default` with infinite stock — for multi-SKU
+        or finite inventory edit AGENT_SKUS in .env after scaffold.
+
+        - price: nanoTON (0 if has_quote=true)
+        - price_usd: optional micro-USDT — adds USDT rail to the default SKU
 
         Read catallaxy://guide/create-agent for the full step-by-step guide
         and catallaxy://spec/agent-contract for the stdin/stdout contract.
@@ -45,11 +52,17 @@ def register(mcp: FastMCP) -> None:
         (agent_dir / "agent.py").write_text(agent_code)
         desc_escaped = description.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
         desc_line = f'"{desc_escaped}"' if ("\n" in description or '"' in description) else description
+
+        sku_parts = [f"ton={price}"]
+        if price_usd is not None:
+            sku_parts.append(f"usd={price_usd}")
+        skus_spec = "default:infinite:" + ":".join(sku_parts)
+
         (agent_dir / ".env.example").write_text(ENV_EXAMPLE_TEMPLATE.format(
             capability=capability,
             name=name,
             description_escaped=desc_line,
-            price=price,
+            skus_spec=skus_spec,
             has_quote=str(has_quote).lower(),
         ))
         (agent_dir / "requirements.txt").write_text(REQUIREMENTS_TEMPLATE)

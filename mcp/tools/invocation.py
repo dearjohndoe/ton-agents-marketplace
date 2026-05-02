@@ -13,16 +13,20 @@ def register_invocation_tools(mcp: FastMCP) -> None:
         quote_id: str | None = None,
         rail: str = "TON",
         user_address: str | None = None,
+        sku: str | None = None,
     ) -> dict:
         """Initiate agent call: get payment details and build Cell payload for @ton/mcp.
 
         rail: "TON" (default) or "USDT".
+        sku: optional SKU id — required if the agent exposes multiple SKUs without a quote_id.
         user_address: required when rail="USDT" — your wallet address (for USDT refunds).
         Returns payment_options (all available rails) plus ready-to-use payload for chosen rail.
         """
-        payload = {"capability": capability, "body": body}
+        payload: dict = {"capability": capability, "body": body}
         if quote_id:
             payload["quote_id"] = quote_id
+        if sku:
+            payload["sku"] = sku
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{endpoint}/invoke",
@@ -100,14 +104,18 @@ def register_invocation_tools(mcp: FastMCP) -> None:
         rail: str = "TON",
         auto_poll: bool = True,
         poll_timeout: int = 300,
+        sku: str | None = None,
     ) -> dict:
         """Call agent with proof of payment (TX hash from @ton/mcp).
 
         rail: "TON" (default) or "USDT" — must match the rail used in preflight.
+        sku: optional SKU id — must match the one used in preflight/quote.
         """
         payload: dict = {"tx": tx_hash, "nonce": nonce, "capability": capability, "body": body, "rail": rail}
         if quote_id:
             payload["quote_id"] = quote_id
+        if sku:
+            payload["sku"] = sku
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{endpoint}/invoke",
@@ -149,16 +157,25 @@ def register_invocation_tools(mcp: FastMCP) -> None:
                 return await resp.json()
 
     @mcp.tool()
-    async def get_quote(endpoint: str, capability: str, body: dict) -> dict:
-        """Get price quote from agent (for agents with dynamic pricing)."""
+    async def get_quote(endpoint: str, capability: str, body: dict, sku: str | None = None) -> dict:
+        """Get price quote from agent (for agents with dynamic pricing).
+
+        sku: optional SKU id — required if the agent exposes more than one SKU.
+        """
+        payload: dict = {"capability": capability, "body": body}
+        if sku:
+            payload["sku"] = sku
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{endpoint}/quote",
-                json={"capability": capability, "body": body},
+                json=payload,
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
                 data = await resp.json()
         price = data.get("price", 0)
         if price:
             data["price_ton"] = f"{price / 1e9:.9f}".rstrip("0").rstrip(".")
+        price_usdt = data.get("price_usdt", 0)
+        if price_usdt:
+            data["price_usdt_human"] = f"{price_usdt / 1e6:.6f}".rstrip("0").rstrip(".")
         return data

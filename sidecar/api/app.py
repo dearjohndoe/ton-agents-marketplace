@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from aiohttp import web
 
-from heartbeat import HeartbeatConfig, HeartbeatManager
+from heartbeat import HeartbeatManager
 from jobs import JobStore
 from storage import StateStore
 from transfer import TransferSender
@@ -53,7 +53,7 @@ class SidecarApp:
         self._single_sku: AgentSku | None = settings.skus[0] if len(settings.skus) == 1 else None
         self.verifier = PaymentVerifier(
             agent_wallet=settings.agent_wallet,
-            min_amount=settings.agent_price,
+            min_amount=0,  # per-call min comes from SKU; constructor default unused
             payment_timeout_seconds=settings.payment_timeout,
             enforce_comment_nonce=settings.enforce_comment_nonce,
             testnet=settings.testnet,
@@ -71,7 +71,7 @@ class SidecarApp:
             self.jetton_verifier = JettonPaymentVerifier(
                 agent_wallet=settings.agent_wallet,
                 usdt_master=usdt_master,
-                min_amount=settings.agent_price_usdt or 0,
+                min_amount=0,  # per-call min comes from SKU; constructor default unused
                 payment_timeout_seconds=settings.payment_timeout,
                 testnet=settings.testnet,
             )
@@ -83,25 +83,9 @@ class SidecarApp:
         self.sidecar_id: str = ""
         # Dynamic pricing cache (populated via agent mode=prices when SKU price==0)
         self._dynamic_prices_cache = DynamicPriceCache()
-        self.heartbeat = HeartbeatManager(
-            config=HeartbeatConfig(
-                registry_address=settings.registry_address,
-                endpoint=settings.agent_endpoint,
-                price=settings.agent_price,
-                capability=settings.capability,
-                name=settings.agent_name,
-                description=settings.agent_description,
-                args_schema={},
-                has_quote=settings.has_quote,
-                price_usdt=settings.agent_price_usdt,
-                result_schema=None,
-                preview_url=settings.agent_preview_url,
-                avatar_url=settings.agent_avatar_url,
-                images=settings.agent_images,
-            ),
-            state_store=self.state_store,
-            transfer_sender=self.sender.send,
-        )
+        # Heartbeat is created in lifecycle.startup once args_schema and sidecar_id
+        # are loaded — there's no useful skeleton we could put here.
+        self.heartbeat: HeartbeatManager | None = None
         self.background_tasks: list[asyncio.Task[Any]] = []
         self.quotes: dict[str, QuoteEntry] = {}
         # Rate Limiting state: ip -> list of timestamps
@@ -140,7 +124,7 @@ class SidecarApp:
                 self.jetton_verifier = JettonPaymentVerifier(
                     agent_wallet=self.settings.agent_wallet,
                     usdt_master=usdt_master,
-                    min_amount=self.settings.agent_price_usdt or 0,
+                    min_amount=0,  # per-call min comes from SKU; constructor default unused
                     payment_timeout_seconds=self.settings.payment_timeout,
                     testnet=self.settings.testnet,
                 )

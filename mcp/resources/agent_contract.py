@@ -59,14 +59,26 @@ stdout (json): {"result": {"type": "json", "data": {"key": "value"}}}
 Вызывается перед оплатой — агент возвращает актуальную цену на основе аргументов.
 Клиент видит цену и plan до того как отправит TON.
 
-stdin:  {"mode": "quote", "capability": "buy_stars", "body": {"stars_count": 100}}
-stdout: {"price": 150000000, "plan": "100 stars for @user — 0.15 TON", "ttl": 300}
+stdin:  {"mode": "quote", "capability": "buy_stars", "sku": "premium", "body": {"stars_count": 100}}
+stdout: {"price": 150000000, "price_usdt": 200000, "plan": "100 stars for @user — 0.15 TON", "ttl": 300}
 
 - price: цена в nanoTON (обязательно целое > 0)
+- price_usdt: опц., цена в micro-USDT (для USDT-рейла; > 0 если указана)
 - plan: строка для отображения пользователю (что будет сделано за эти деньги)
 - ttl: время жизни квоты в секундах (сайдкар хранит и использует при вызове)
+- sku: id SKU из запроса — используй для расчёта цены под конкретный вариант
 
 exit code != 0 в quote mode → клиент получает ошибку, платёж не инициируется.
+
+### 4. prices (опциональный, для динамических SKU)
+
+Вызывается сайдкаром когда у SKU `ton=0` и `usd=0` (sentinel динамической цены).
+Возвращает текущие цены для каждого SKU без выполнения работы.
+
+stdin:  {"mode": "prices"}
+stdout: {"premium_3m": {"ton": 1000000000, "usd": 1500000}, "premium_6m": {"ton": 1800000000}}
+
+Кэшируется сайдкаром, см. AGENT_SYNC_TIMEOUT.
 
 ## Ошибки
 

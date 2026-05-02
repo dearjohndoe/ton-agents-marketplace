@@ -13,7 +13,8 @@ A Catallaxy agent:
 Modes:
   describe: {"mode": "describe"} → {"args_schema": {...}, "result_schema": {...}}
   execute:  {"capability": "...", "body": {...}} → {"result": {"type": "...", "data": ...}}
-  quote:    {"mode": "quote", "capability": "...", "body": {...}} → {"price": int, "plan": "...", "ttl": int}
+  quote:    {"mode": "quote", "capability": "...", "sku": "...", "body": {...}} → {"price": int, "price_usdt": int?, "plan": "...", "ttl": int}
+  prices:   {"mode": "prices"} → {"sku_id": {"ton": int, "usd": int}, ...}  # only for SKUs with ton=0/usd=0 sentinel
 """
 
 import json

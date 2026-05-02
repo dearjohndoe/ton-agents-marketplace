@@ -217,25 +217,33 @@ def load_settings(env_file: str | None = None) -> Settings:
         raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
 
     if not os.getenv("AGENT_PRICE") and not os.getenv("AGENT_PRICE_USD") and not os.getenv("AGENT_SKUS"):
-        raise RuntimeError("At least one of AGENT_PRICE, AGENT_PRICE_USD, or AGENT_SKUS must be set")
+        raise RuntimeError("Either AGENT_SKUS or AGENT_PRICE/AGENT_PRICE_USD must be set")
 
     agent_wallet_pk = os.environ["AGENT_WALLET_PK"]
     testnet = _env_bool("TESTNET", False)
 
-    agent_price = int(os.getenv("AGENT_PRICE", "0"))
-    agent_price_usdt = int(os.environ["AGENT_PRICE_USD"]) if os.getenv("AGENT_PRICE_USD") else None
-
     raw_skus = os.getenv("AGENT_SKUS", "").strip()
     if raw_skus:
+        # AGENT_SKUS is the source of truth — AGENT_PRICE/AGENT_PRICE_USD are ignored.
         skus = _parse_skus(raw_skus, os.getenv("AGENT_SKU_TITLES", ""))
-        # Override agent_price/usdt with first SKU for heartbeat legacy
-        first = skus[0]
-        if first.price_ton is not None:
-            agent_price = first.price_ton
-        if first.price_usd is not None:
-            agent_price_usdt = first.price_usd
     else:
-        skus = (_synthesize_default_sku(agent_price, agent_price_usdt, os.getenv("AGENT_STOCK")),)
+        legacy_price = int(os.getenv("AGENT_PRICE", "0"))
+        legacy_price_usdt = int(os.environ["AGENT_PRICE_USD"]) if os.getenv("AGENT_PRICE_USD") else None
+        skus = (_synthesize_default_sku(legacy_price, legacy_price_usdt, os.getenv("AGENT_STOCK")),)
+
+    # Settings.agent_price / agent_price_usdt are derived from SKUs: min non-zero price
+    # per rail. Zero is the dynamic-pricing sentinel — exclude from min, but if every
+    # SKU on a rail is zero, propagate zero (keeps the rail enabled without a static price).
+    if skus[0].price_ton is None:
+        agent_price = 0
+    else:
+        non_zero = [s.price_ton for s in skus if s.price_ton]
+        agent_price = min(non_zero) if non_zero else 0
+    if skus[0].price_usd is None:
+        agent_price_usdt: int | None = None
+    else:
+        non_zero_usd = [s.price_usd for s in skus if s.price_usd]
+        agent_price_usdt = min(non_zero_usd) if non_zero_usd else 0
 
     rails: list[str] = []
     if skus[0].price_ton is not None:

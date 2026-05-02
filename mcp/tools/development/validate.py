@@ -6,6 +6,37 @@ from mcp.server.fastmcp import FastMCP
 from lib.agent_runner import run_agent
 
 
+def _skus_have_pricing(raw: str, has_quote: bool) -> bool:
+    """Sanity-check AGENT_SKUS: every SKU must declare ton/usd; positive price required unless has_quote."""
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        parts = entry.split(":")
+        if len(parts) < 3:
+            return False
+        positive_seen = False
+        rail_seen = False
+        for tok in parts[2:]:
+            tok = tok.strip()
+            if "=" not in tok:
+                continue
+            key, _, val = tok.partition("=")
+            if key.strip().lower() not in {"ton", "usd"}:
+                continue
+            rail_seen = True
+            try:
+                if int(val) > 0:
+                    positive_seen = True
+            except ValueError:
+                return False
+        if not rail_seen:
+            return False
+        if not positive_seen and not has_quote:
+            return False
+    return True
+
+
 def register(mcp: FastMCP) -> None:
 
     @mcp.tool()
@@ -28,7 +59,7 @@ def register(mcp: FastMCP) -> None:
 
         required_vars = [
             "AGENT_COMMAND", "AGENT_CAPABILITY", "AGENT_NAME", "AGENT_DESCRIPTION",
-            "AGENT_PRICE", "AGENT_ENDPOINT", "AGENT_WALLET_PK", "REGISTRY_ADDRESS",
+            "AGENT_ENDPOINT", "AGENT_WALLET_PK", "REGISTRY_ADDRESS",
             "SIDECAR_STATE_PATH", "SIDECAR_TX_DB_PATH", "AGENT_HAS_QUOTE",
         ]
         env_values: dict[str, str] = {}
@@ -43,6 +74,13 @@ def register(mcp: FastMCP) -> None:
         for var in required_vars:
             chk(f"{var} is set", bool(env_values.get(var)))
 
+        # AGENT_SKUS is the modern config; AGENT_PRICE/AGENT_PRICE_USD work as legacy fallback.
+        has_skus = bool(env_values.get("AGENT_SKUS"))
+        has_legacy_price = bool(env_values.get("AGENT_PRICE")) or bool(env_values.get("AGENT_PRICE_USD"))
+        chk("AGENT_SKUS or AGENT_PRICE/AGENT_PRICE_USD is set", has_skus or has_legacy_price)
+        if has_legacy_price and not has_skus:
+            warnings.append("Using legacy AGENT_PRICE/AGENT_PRICE_USD — prefer AGENT_SKUS for new agents")
+
         # describe mode — uses AGENT_COMMAND from .env via run_agent
         code, stdout, stderr = await run_agent(agent_dir, {"mode": "describe"}, timeout=10)
         describe_ok = False
@@ -56,14 +94,17 @@ def register(mcp: FastMCP) -> None:
             warnings.append(f"describe mode stderr: {stderr.strip()[:200]}")
         chk("describe mode works", describe_ok)
 
-        # price positive — for has_quote=true, 0 is acceptable (dynamic pricing)
-        price_str = env_values.get("AGENT_PRICE", "0")
+        # Pricing sanity — at least one rail must have a non-zero price unless has_quote/dynamic.
         has_quote = env_values.get("AGENT_HAS_QUOTE", "false").lower() == "true"
-        try:
-            price_val = int(price_str)
-            chk("AGENT_PRICE is positive", price_val > 0 or has_quote)
-        except ValueError:
-            chk("AGENT_PRICE is positive", False)
+        if has_skus:
+            chk("AGENT_SKUS pricing valid", _skus_have_pricing(env_values["AGENT_SKUS"], has_quote))
+        else:
+            try:
+                ton_val = int(env_values.get("AGENT_PRICE", "0") or "0")
+                usd_val = int(env_values.get("AGENT_PRICE_USD", "0") or "0")
+                chk("price is positive (or has_quote=true)", ton_val > 0 or usd_val > 0 or has_quote)
+            except ValueError:
+                chk("price is positive (or has_quote=true)", False)
 
         # endpoint valid URL
         endpoint = env_values.get("AGENT_ENDPOINT", "")

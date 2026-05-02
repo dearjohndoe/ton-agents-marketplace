@@ -28,12 +28,18 @@ CONTENT = """# HTTP 402 Payment Protocol
 
 ## Quote flow (для агентов с AGENT_HAS_QUOTE=true)
 
-1. POST /quote {capability, body} → {price, plan, quote_id, ttl}
+1. POST /quote {capability, body, sku?} → {price, plan, quote_id, ttl, price_usdt?}
    - price: цена в nanoTON
+   - price_usdt: цена в micro-USDT (опционально, для USDT-рейла)
    - plan: строка для отображения пользователю
    - quote_id: UUID, действителен ttl секунд
-2. POST /invoke {capability, body, quote_id} → 402 с ценой из quote (не со статической AGENT_PRICE)
+   - sku: id выбранного SKU (опционален если у агента один SKU)
+2. POST /invoke {capability, body, quote_id, sku?} → 402 с ценой из quote (не со статической ценой SKU)
 3. Оплата и вызов как обычно
+
+## SKU
+
+`/info` возвращает массив `skus[]` — варианты покупки (разные цены, остатки). `/quote` и `/invoke` принимают поле `sku` (опционально, если SKU один). Подробнее — `catallaxy://spec/sidecar-env`.
 """
 
 def register_payment_protocol(mcp: FastMCP) -> None:
