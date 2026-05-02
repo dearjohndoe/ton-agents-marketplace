@@ -23,6 +23,9 @@ from cli import (
     _normalize_service_name,
     _discover_sidecar_agents,
 )
+from cli.commands import doctor as cli_doctor_module
+from cli.commands import service as cli_service_module
+from cli import discovery as cli_discovery_module
 
 
 # ── render_systemd_unit ────────────────────────────────────────────────
@@ -178,7 +181,7 @@ def test_handle_service_install_success(tmp_path, monkeypatch, capsys):
         run_calls.append(cmd)
         return 0
 
-    monkeypatch.setattr(cli_module, "_run_command", fake_run)
+    monkeypatch.setattr(cli_service_module, "_run_command", fake_run)
 
     args = argparse.Namespace(
         name="sidecar-x",
@@ -210,7 +213,7 @@ def test_handle_service_uninstall_no_env_file(tmp_path, monkeypatch, capsys):
         run_calls.append(cmd)
         return 0
 
-    monkeypatch.setattr(cli_module, "_run_command", fake_run)
+    monkeypatch.setattr(cli_service_module, "_run_command", fake_run)
 
     # Unit file doesn't exist — skip unlink path.
     args = argparse.Namespace(name="sidecar-x", env_file=None)
@@ -231,12 +234,12 @@ def test_handle_service_uninstall_cleans_state_files(tmp_path, monkeypatch, caps
     tx_file = tmp_path / "tx.db"
     tx_file.write_text("")
 
-    monkeypatch.setattr(cli_module, "_run_command", lambda cmd: 0)
+    monkeypatch.setattr(cli_service_module, "_run_command", lambda cmd: 0)
 
     fake_settings = MagicMock()
     fake_settings.state_path = str(state_file)
     fake_settings.tx_db_path = str(tx_file)
-    monkeypatch.setattr(cli_module, "load_settings", lambda _: fake_settings)
+    monkeypatch.setattr(cli_service_module, "load_settings", lambda _: fake_settings)
 
     args = argparse.Namespace(name="sidecar-x", env_file="/fake/.env")
     assert handle_service_uninstall(args) == 0
@@ -256,7 +259,7 @@ def test_handle_service_command_unknown_returns_1(capsys):
 
 def test_handle_service_command_start(monkeypatch):
     calls: list[list[str]] = []
-    monkeypatch.setattr(cli_module, "_run_command", lambda cmd: calls.append(cmd) or 0)
+    monkeypatch.setattr(cli_service_module, "_run_command", lambda cmd: calls.append(cmd) or 0)
 
     args = argparse.Namespace(service_command="start", name="sidecar")
     assert handle_service_command(args) == 0
@@ -265,7 +268,7 @@ def test_handle_service_command_start(monkeypatch):
 
 def test_handle_service_command_stop(monkeypatch):
     calls: list[list[str]] = []
-    monkeypatch.setattr(cli_module, "_run_command", lambda cmd: calls.append(cmd) or 0)
+    monkeypatch.setattr(cli_service_module, "_run_command", lambda cmd: calls.append(cmd) or 0)
     args = argparse.Namespace(service_command="stop", name="sidecar")
     assert handle_service_command(args) == 0
     assert calls == [["systemctl", "stop", "sidecar.service"]]
@@ -273,7 +276,7 @@ def test_handle_service_command_stop(monkeypatch):
 
 def test_handle_service_command_logs(monkeypatch):
     calls: list[list[str]] = []
-    monkeypatch.setattr(cli_module, "_run_command", lambda cmd: calls.append(cmd) or 0)
+    monkeypatch.setattr(cli_service_module, "_run_command", lambda cmd: calls.append(cmd) or 0)
     args = argparse.Namespace(service_command="logs", name="sidecar", follow=True, lines=100)
     handle_service_command(args)
     assert calls == [["journalctl", "-u", "sidecar.service", "-n", "100", "-f"]]
@@ -297,7 +300,7 @@ def test_handle_doctor_settings_error_reported(tmp_path, monkeypatch, capsys):
 
     def boom(_):
         raise RuntimeError("missing vars")
-    monkeypatch.setattr(cli_module, "load_settings", boom)
+    monkeypatch.setattr(cli_doctor_module, "load_settings", boom)
 
     args = argparse.Namespace(env_file=str(env))
     rc = handle_doctor(args)
@@ -313,13 +316,13 @@ def test_handle_doctor_describe_ok(tmp_path, monkeypatch, capsys):
 
     fake_settings = MagicMock()
     fake_settings.agent_command = 'echo {"args_schema": {"text": {}}}'
-    monkeypatch.setattr(cli_module, "load_settings", lambda _: fake_settings)
+    monkeypatch.setattr(cli_doctor_module, "load_settings", lambda _: fake_settings)
 
     fake_result = MagicMock()
     fake_result.returncode = 0
     fake_result.stdout = b'{"args_schema": {"text": {}}}'
     fake_result.stderr = b""
-    monkeypatch.setattr(cli_module.subprocess, "run", lambda *a, **kw: fake_result)
+    monkeypatch.setattr(cli_doctor_module.subprocess, "run", lambda *a, **kw: fake_result)
 
     args = argparse.Namespace(env_file=str(env))
     rc = handle_doctor(args)
@@ -332,13 +335,13 @@ def test_handle_doctor_describe_ok(tmp_path, monkeypatch, capsys):
 def test_handle_doctor_describe_nonzero_exit(tmp_path, monkeypatch, capsys):
     env = tmp_path / ".env"
     env.write_text("")
-    monkeypatch.setattr(cli_module, "load_settings", lambda _: MagicMock(agent_command="false"))
+    monkeypatch.setattr(cli_doctor_module, "load_settings", lambda _: MagicMock(agent_command="false"))
 
     fake_result = MagicMock()
     fake_result.returncode = 2
     fake_result.stdout = b""
     fake_result.stderr = b"agent explosion"
-    monkeypatch.setattr(cli_module.subprocess, "run", lambda *a, **kw: fake_result)
+    monkeypatch.setattr(cli_doctor_module.subprocess, "run", lambda *a, **kw: fake_result)
 
     args = argparse.Namespace(env_file=str(env))
     assert handle_doctor(args) == 1
@@ -350,13 +353,13 @@ def test_handle_doctor_describe_nonzero_exit(tmp_path, monkeypatch, capsys):
 def test_handle_doctor_describe_invalid_json(tmp_path, monkeypatch, capsys):
     env = tmp_path / ".env"
     env.write_text("")
-    monkeypatch.setattr(cli_module, "load_settings", lambda _: MagicMock(agent_command="x"))
+    monkeypatch.setattr(cli_doctor_module, "load_settings", lambda _: MagicMock(agent_command="x"))
 
     fake_result = MagicMock()
     fake_result.returncode = 0
     fake_result.stdout = b"not json"
     fake_result.stderr = b""
-    monkeypatch.setattr(cli_module.subprocess, "run", lambda *a, **kw: fake_result)
+    monkeypatch.setattr(cli_doctor_module.subprocess, "run", lambda *a, **kw: fake_result)
 
     args = argparse.Namespace(env_file=str(env))
     assert handle_doctor(args) == 1
@@ -367,13 +370,13 @@ def test_handle_doctor_describe_invalid_json(tmp_path, monkeypatch, capsys):
 def test_handle_doctor_describe_timeout(tmp_path, monkeypatch, capsys):
     env = tmp_path / ".env"
     env.write_text("")
-    monkeypatch.setattr(cli_module, "load_settings", lambda _: MagicMock(agent_command="x"))
+    monkeypatch.setattr(cli_doctor_module, "load_settings", lambda _: MagicMock(agent_command="x"))
 
     def timeout_run(*a, **kw):
         import subprocess as sp
         raise sp.TimeoutExpired(cmd="x", timeout=10)
 
-    monkeypatch.setattr(cli_module.subprocess, "run", timeout_run)
+    monkeypatch.setattr(cli_doctor_module.subprocess, "run", timeout_run)
 
     args = argparse.Namespace(env_file=str(env))
     assert handle_doctor(args) == 1
@@ -408,11 +411,9 @@ def test_normalize_no_double_suffix():
 def test_discover_sidecar_agents_finds_units(tmp_path, monkeypatch):
     (tmp_path / "foo-ctlx-agent.service").write_text("[Unit]\nDescription=TON Sidecar (foo-ctlx-agent)\n")
     (tmp_path / "other.service").write_text("[Unit]\nDescription=Something else\n")
-    monkeypatch.setattr(cli_module.Path, "__new__", lambda cls, *a, **k: object.__new__(cls))
 
-    import cli as cm
-    original = cm.Path
-    monkeypatch.setattr(cm, "Path", lambda p: tmp_path if p == "/etc/systemd/system" else original(p))
+    original = cli_discovery_module.Path
+    monkeypatch.setattr(cli_discovery_module, "Path", lambda p: tmp_path if p == "/etc/systemd/system" else original(p))
 
     found = _discover_sidecar_agents()
     assert "foo-ctlx-agent" in found

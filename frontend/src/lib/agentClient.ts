@@ -56,10 +56,11 @@ function resolveUrl(endpoint: string, path: string): { url: string; headers?: Re
 
 export interface InvokeResult {
   jobId: string
-  status: 'done' | 'pending' | 'error' | 'refunded_out_of_stock'
+  status: 'done' | 'pending' | 'error' | 'refunded'
   result?: TypedResult
   error?: string
   reason?: string
+  reasonCode?: string
   refundTx?: string
 }
 
@@ -166,7 +167,7 @@ export async function invokeAgent(
   return {
     jobId: data.job_id, status: data.status,
     result: data.result, error: data.error,
-    reason: data.reason, refundTx: data.refund_tx,
+    reason: data.reason, reasonCode: data.reason_code, refundTx: data.refund_tx,
   }
 }
 
@@ -176,7 +177,7 @@ export async function pollResult(endpoint: string, jobId: string): Promise<Invok
   return {
     jobId, status: data.status,
     result: data.result, error: data.error,
-    reason: data.reason, refundTx: data.refund_tx,
+    reason: data.reason, reasonCode: data.reason_code, refundTx: data.refund_tx,
   }
 }
 
@@ -198,6 +199,7 @@ export interface QuotePlan {
 export interface QuoteResult {
   quoteId: string
   price: number
+  priceUsdt: number | null
   plan: QuotePlan | string | null
   expiresAt: number
   note: string | null
@@ -215,6 +217,7 @@ export async function fetchQuote(
   return {
     quoteId: data.quote_id,
     price: data.price,
+    priceUsdt: typeof data.price_usdt === 'number' ? data.price_usdt : null,
     plan: data.plan,
     expiresAt: data.expires_at,
     note: data.note ?? null,

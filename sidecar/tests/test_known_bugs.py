@@ -29,7 +29,7 @@ import transfer as transfer_module
 from api import SidecarApp
 from settings import AgentSku, DEFAULT_SKU_ID, Settings
 from transfer import TransferSender
-from verify import PaymentVerificationError, ProcessedTxStore, VerifiedPayment
+from payments import PaymentVerificationError, ProcessedTxStore, VerifiedPayment
 
 
 # ── Shared settings/app builders (subset of test_api.py) ───────────────
@@ -70,6 +70,8 @@ def _make_settings(tmp_path: Path, **overrides) -> Settings:
         stock_db_path=str(tmp_path / "stock.db"),
         enforce_comment_nonce=True,
         refund_fee_nanoton=500_000,
+        refund_worker_interval=60,
+        refund_max_attempts=10,
         agent_price_usdt=agent_price_usdt,
         has_quote=False,
         rate_limit_requests=3,
@@ -101,16 +103,28 @@ async def bug_client(tmp_path):
     """aiohttp TestClient bound to a SidecarApp with mocks for TON deps."""
     app = _make_app(tmp_path)
 
-    async def noop():
+    async def fake_startup():
         app._file_store_dir.mkdir(parents=True, exist_ok=True)
+        await app.refund_queue.init()
 
-    app.startup = noop  # type: ignore[method-assign]
-    app.shutdown = noop  # type: ignore[method-assign]
+    async def fake_shutdown():
+        await app.refund_queue.close()
+        try:
+            await app.tx_store.close()
+        except Exception:
+            pass
+        try:
+            await app.stock.close()
+        except Exception:
+            pass
+
+    app.startup = fake_startup  # type: ignore[method-assign]
+    app.shutdown = fake_shutdown  # type: ignore[method-assign]
     web_app = app.build_web_app()
     web_app.on_startup.clear()
     web_app.on_shutdown.clear()
-    web_app.on_startup.append(lambda _: noop())
-    web_app.on_shutdown.append(lambda _: noop())
+    web_app.on_startup.append(lambda _: fake_startup())
+    web_app.on_shutdown.append(lambda _: fake_shutdown())
 
     async with TestClient(TestServer(web_app)) as c:
         c.sidecar = app  # type: ignore[attr-defined]
@@ -391,3 +405,398 @@ async def test_heartbeat_loop_respects_configured_interval(tmp_state_path):
         "HeartbeatManager.loop() does not reference self._interval — the "
         "configured interval is ignored"
     )
+
+
+# ────────────────────────────────────────────────────────────────────────
+# BUG 6 — jetton_verifier not created for dynamic USDT SKUs (price_usd=0)
+# ────────────────────────────────────────────────────────────────────────
+
+def test_jetton_verifier_created_for_dynamic_usdt_sku(tmp_path):
+    """SidecarApp must create jetton_verifier when any SKU has price_usd=0 (dynamic).
+
+    BUG: the constructor checked ``if settings.agent_price_usdt:`` which is
+    falsy when agent_price_usdt==0 (dynamic USDT pricing sentinel).  A SKU
+    with price_usd=0 passes the sku.price_usd-is-None guard at invoke time,
+    so a user could pay with USDT, hit the ``jetton_verifier is None`` branch,
+    receive "USDT payments not configured" (HTTP 400) and lose their funds
+    with no refund or meaningful error log.
+
+    Fix: use ``any(s.price_usd is not None for s in settings.skus)`` so the
+    verifier is always created when the USDT rail is declared.
+    """
+    dynamic_usdt_sku = AgentSku(
+        sku_id="dynamic", title="dynamic",
+        price_ton=0, price_usd=0,
+        initial_stock=None,
+    )
+    settings = _make_settings(
+        tmp_path,
+        skus=(dynamic_usdt_sku,),
+        agent_price=0,
+        agent_price_usdt=0,
+        payment_rails=("TON", "USDT"),
+    )
+    app = SidecarApp(settings)
+    assert app.jetton_verifier is not None, (
+        "jetton_verifier must be created when SKU has price_usd=0 (dynamic USDT); "
+        "if None, USDT payments are silently rejected with no refund"
+    )
+
+
+# ────────────────────────────────────────────────────────────────────────
+# BUG 7 — USDT payment accepted with min_amount=0 when dynamic price missing
+# ────────────────────────────────────────────────────────────────────────
+
+async def test_usdt_payment_rejected_when_price_unavailable(tmp_path, monkeypatch):
+    """USDT execution must return 503 when dynamic price fetch returned no USD price.
+
+    BUG: for a dynamic SKU (price_ton=0, price_usd=0), if the agent's price
+    response omits the USD field, eff_usd stays 0.  jetton_verifier.verify()
+    was then called with min_amount=0, meaning any incoming USDT amount would
+    pass verification — the agent accepted payment without knowing the price.
+
+    Fix: when rail=USDT and min_amount_usdt==0 on the execution path, return
+    503 "USDT price unavailable" before calling verify().
+    """
+    import api as api_module
+    from aiohttp.test_utils import TestClient, TestServer
+    from unittest.mock import AsyncMock
+
+    dynamic_sku = AgentSku(
+        sku_id="dyn", title="dyn",
+        price_ton=0, price_usd=0,
+        initial_stock=None,
+    )
+    settings = _make_settings(
+        tmp_path,
+        skus=(dynamic_sku,),
+        agent_price=0,
+        agent_price_usdt=0,
+        payment_rails=("TON", "USDT"),
+    )
+    app = SidecarApp(settings)
+    app.sidecar_id = "sid-test"
+    app.args_schema = {"text": {"type": "string", "required": True}}
+    app._file_store_dir.mkdir(parents=True, exist_ok=True)
+    # Pretend the verifier started OK so the lazy-bootstrap path is skipped
+    # — this test is about the price-availability guard, not the bootstrap.
+    app._agent_jetton_wallet = "EQjettonwallet"
+
+    # Agent returns TON price only — no USD
+    async def fake_run(**kwargs):
+        return {"prices": {"dyn": {"ton": 1_000_000}}}
+
+    monkeypatch.setattr(api_module, "run_agent_subprocess", fake_run)
+
+    async def fake_startup():
+        app._file_store_dir.mkdir(parents=True, exist_ok=True)
+        await app.stock.init(app.settings.skus)
+        await app.refund_queue.init()
+
+    async def fake_shutdown():
+        await app.refund_queue.close()
+        await app.tx_store.close()
+        await app.stock.close()
+
+    app.startup = fake_startup  # type: ignore[method-assign]
+    app.shutdown = fake_shutdown  # type: ignore[method-assign]
+    web_app = app.build_web_app()
+    web_app.on_startup.clear()
+    web_app.on_shutdown.clear()
+    web_app.on_startup.append(lambda _: fake_startup())
+    web_app.on_shutdown.append(lambda _: fake_shutdown())
+
+    app.tx_store.is_processed = AsyncMock(return_value=False)
+
+    async with TestClient(TestServer(web_app)) as c:
+        resp = await c.post("/invoke", json={
+            "capability": "translate",
+            "tx": "some-usdt-tx",
+            "nonce": "abc:sid-test",
+            "rail": "USDT",
+            "body": {"text": "hello"},
+        })
+        assert resp.status == 503, (
+            f"Expected 503 when USDT price unavailable, got {resp.status}"
+        )
+        data = await resp.json()
+        assert "unavailable" in data.get("error", "").lower()
+
+
+# ────────────────────────────────────────────────────────────────────────
+# BUG 8 — TON payment accepted with min_amount=0 when dynamic price missing
+# ────────────────────────────────────────────────────────────────────────
+
+async def test_ton_payment_rejected_when_price_unavailable(tmp_path, monkeypatch):
+    """TON execution must return 503 when dynamic price fetch returned no TON price.
+
+    Symmetric to BUG 7: for a dynamic SKU (price_ton=0, price_usd=0), if the
+    agent's price response omits the TON field (or fetch fails), eff_ton stays
+    0.  PaymentVerifier.verify() was then called with min_amount=0 and the
+    ``amount < required_amount`` check became ``amount < 0`` — i.e. ANY TON
+    amount, including 1 nanoTON, passed verification.
+
+    Fix: when rail=TON and min_amount_ton==0 on the execution path, return
+    503 "TON price unavailable" before calling verify().
+    """
+    import api as api_module
+    from aiohttp.test_utils import TestClient, TestServer
+    from unittest.mock import AsyncMock
+
+    dynamic_sku = AgentSku(
+        sku_id="dyn", title="dyn",
+        price_ton=0, price_usd=0,
+        initial_stock=None,
+    )
+    settings = _make_settings(
+        tmp_path,
+        skus=(dynamic_sku,),
+        agent_price=0,
+        agent_price_usdt=0,
+        payment_rails=("TON", "USDT"),
+    )
+    app = SidecarApp(settings)
+    app.sidecar_id = "sid-test"
+    app.args_schema = {"text": {"type": "string", "required": True}}
+    app._file_store_dir.mkdir(parents=True, exist_ok=True)
+
+    # Agent returns USD price only — no TON
+    async def fake_run(**kwargs):
+        return {"prices": {"dyn": {"usd": 1_000_000}}}
+
+    monkeypatch.setattr(api_module, "run_agent_subprocess", fake_run)
+
+    async def fake_startup():
+        app._file_store_dir.mkdir(parents=True, exist_ok=True)
+        await app.stock.init(app.settings.skus)
+        await app.refund_queue.init()
+
+    async def fake_shutdown():
+        await app.refund_queue.close()
+        await app.tx_store.close()
+        await app.stock.close()
+
+    app.startup = fake_startup  # type: ignore[method-assign]
+    app.shutdown = fake_shutdown  # type: ignore[method-assign]
+    web_app = app.build_web_app()
+    web_app.on_startup.clear()
+    web_app.on_shutdown.clear()
+    web_app.on_startup.append(lambda _: fake_startup())
+    web_app.on_shutdown.append(lambda _: fake_shutdown())
+
+    app.tx_store.is_processed = AsyncMock(return_value=False)
+
+    async with TestClient(TestServer(web_app)) as c:
+        resp = await c.post("/invoke", json={
+            "capability": "translate",
+            "tx": "some-ton-tx",
+            "nonce": "abc:sid-test",
+            "rail": "TON",
+            "body": {"text": "hello"},
+        })
+        assert resp.status == 503, (
+            f"Expected 503 when TON price unavailable, got {resp.status}"
+        )
+        data = await resp.json()
+        assert "unavailable" in data.get("error", "").lower()
+
+
+# ────────────────────────────────────────────────────────────────────────
+# BUG 9 — USDT payment with absent jetton_verifier silently lost (no refund)
+# ────────────────────────────────────────────────────────────────────────
+
+async def test_refund_queue_enqueues_usdt_when_verifier_unavailable(tmp_path, monkeypatch):
+    """USDT /invoke must enqueue the tx for refund when verifier can't bootstrap.
+
+    BUG: when ``jetton_verifier`` was None (misconfig OR liteserver outage),
+    /invoke returned 400 "USDT payments not configured" and the user's USDT
+    payment sat on the agent's wallet with no automated recovery path. The
+    sidecar logged "manual refund required" and did nothing.
+
+    Fix: try to lazy-bootstrap the verifier; if that fails, enqueue the tx
+    in the persistent refund queue and return 503 with ``refund_pending=True``.
+    A background worker drains the queue.
+    """
+    import api as api_module
+    from aiohttp.test_utils import TestClient, TestServer
+    from unittest.mock import AsyncMock
+
+    dynamic_sku = AgentSku(
+        sku_id="dyn", title="dyn",
+        price_ton=0, price_usd=500_000,  # static USDT price
+        initial_stock=None,
+    )
+    settings = _make_settings(
+        tmp_path,
+        skus=(dynamic_sku,),
+        agent_price=0,
+        agent_price_usdt=500_000,
+        payment_rails=("USDT",),
+    )
+    app = SidecarApp(settings)
+    app.sidecar_id = "sid-test"
+    app.args_schema = {"text": {"type": "string", "required": True}}
+    app._file_store_dir.mkdir(parents=True, exist_ok=True)
+
+    # Force the bootstrap to fail (simulating a permanent liteserver outage).
+    # _agent_jetton_wallet stays None and ensure_jetton_verifier returns False.
+    async def fake_ensure():
+        return False
+    app.ensure_jetton_verifier = fake_ensure  # type: ignore[method-assign]
+
+    async def fake_run(**kwargs):
+        return {"prices": {"dyn": {"usd": 500_000}}}
+    monkeypatch.setattr(api_module, "run_agent_subprocess", fake_run)
+
+    async def fake_startup():
+        app._file_store_dir.mkdir(parents=True, exist_ok=True)
+        await app.stock.init(app.settings.skus)
+        await app.refund_queue.init()
+
+    async def fake_shutdown():
+        await app.refund_queue.close()
+        await app.tx_store.close()
+        await app.stock.close()
+
+    app.startup = fake_startup  # type: ignore[method-assign]
+    app.shutdown = fake_shutdown  # type: ignore[method-assign]
+    web_app = app.build_web_app()
+    web_app.on_startup.clear()
+    web_app.on_shutdown.clear()
+    web_app.on_startup.append(lambda _: fake_startup())
+    web_app.on_shutdown.append(lambda _: fake_shutdown())
+
+    app.tx_store.is_processed = AsyncMock(return_value=False)
+
+    async with TestClient(TestServer(web_app)) as c:
+        resp = await c.post("/invoke", json={
+            "capability": "translate",
+            "tx": "lost-usdt-tx",
+            "nonce": "abc:sid-test",
+            "rail": "USDT",
+            "body": {"text": "hello"},
+        })
+        assert resp.status == 503, f"Expected 503, got {resp.status}"
+        data = await resp.json()
+        assert data.get("refund_pending") is True
+        assert data.get("tx") == "lost-usdt-tx"
+
+        # Tx must be persisted in the refund queue for the worker to pick up.
+        entry = await app.refund_queue.get("lost-usdt-tx")
+        assert entry is not None
+        assert entry.status == "pending"
+        assert entry.rail == "USDT"
+        assert entry.sku_id == "dyn"
+
+
+async def test_invoke_blocks_retry_for_tx_in_refund_queue(tmp_path, monkeypatch):
+    """Once a tx is enqueued for refund, /invoke must reject retries on it.
+
+    Otherwise a retry could race the refund worker: /invoke succeeds (verifier
+    came back) AND the worker sends a refund — agent loses funds twice.
+    """
+    import api as api_module
+    from aiohttp.test_utils import TestClient, TestServer
+    from unittest.mock import AsyncMock
+
+    sku = AgentSku(
+        sku_id="dyn", title="dyn",
+        price_ton=0, price_usd=500_000,
+        initial_stock=None,
+    )
+    settings = _make_settings(
+        tmp_path,
+        skus=(sku,),
+        agent_price=0,
+        agent_price_usdt=500_000,
+        payment_rails=("USDT",),
+    )
+    app = SidecarApp(settings)
+    app.sidecar_id = "sid-test"
+    app.args_schema = {"text": {"type": "string", "required": True}}
+    app._file_store_dir.mkdir(parents=True, exist_ok=True)
+
+    async def fake_run(**kwargs):
+        return {"prices": {"dyn": {"usd": 500_000}}}
+    monkeypatch.setattr(api_module, "run_agent_subprocess", fake_run)
+
+    async def fake_startup():
+        app._file_store_dir.mkdir(parents=True, exist_ok=True)
+        await app.stock.init(app.settings.skus)
+        await app.refund_queue.init()
+        # Pre-seed the queue as if a previous request enqueued this tx.
+        await app.refund_queue.enqueue(
+            tx_hash="queued-tx", nonce="abc:sid-test", rail="USDT", sku_id="dyn",
+        )
+
+    async def fake_shutdown():
+        await app.refund_queue.close()
+        await app.tx_store.close()
+        await app.stock.close()
+
+    app.startup = fake_startup  # type: ignore[method-assign]
+    app.shutdown = fake_shutdown  # type: ignore[method-assign]
+    web_app = app.build_web_app()
+    web_app.on_startup.clear()
+    web_app.on_shutdown.clear()
+    web_app.on_startup.append(lambda _: fake_startup())
+    web_app.on_shutdown.append(lambda _: fake_shutdown())
+
+    app.tx_store.is_processed = AsyncMock(return_value=False)
+    # Bootstrap returns OK so verify_payment would normally proceed —
+    # the refund-queue pre-check must intercept FIRST.
+    async def fake_ensure():
+        app._agent_jetton_wallet = "EQpretend"
+        return True
+    app.ensure_jetton_verifier = fake_ensure  # type: ignore[method-assign]
+
+    async with TestClient(TestServer(web_app)) as c:
+        resp = await c.post("/invoke", json={
+            "capability": "translate",
+            "tx": "queued-tx",
+            "nonce": "abc:sid-test",
+            "rail": "USDT",
+            "body": {"text": "hello"},
+        })
+        assert resp.status == 409, f"Expected 409 retry-blocked, got {resp.status}"
+        data = await resp.json()
+        assert data.get("refund_pending") is True
+
+
+# ────────────────────────────────────────────────────────────────────────
+# BUG 10 — RefundQueue state machine: claim must be atomic & idempotent
+# ────────────────────────────────────────────────────────────────────────
+
+async def test_refund_queue_state_machine(tmp_path):
+    """Atomic claim must prevent two workers from refunding the same tx."""
+    from payments import RefundQueue
+
+    rq = RefundQueue(str(tmp_path / "pr.db"))
+    await rq.init()
+    try:
+        assert await rq.enqueue(
+            tx_hash="t1", nonce="n1", rail="USDT", sku_id="s1",
+            sender="EQsender", amount=1000,
+        )
+        # Duplicate enqueue is a no-op.
+        assert not await rq.enqueue(
+            tx_hash="t1", nonce="n1", rail="USDT",
+        )
+
+        # Two concurrent workers race on claim — only one wins.
+        results = await asyncio.gather(rq.claim("t1"), rq.claim("t1"))
+        assert sum(results) == 1, f"expected exactly one claim winner, got {results}"
+
+        entry = await rq.get("t1")
+        assert entry.status == "refunding"
+        assert entry.attempts == 1
+
+        await rq.mark_refunded("t1", "refund-tx-hash")
+        entry = await rq.get("t1")
+        assert entry.status == "refunded"
+        assert entry.refund_tx == "refund-tx-hash"
+
+        # Already-refunded entry must not be re-claimable.
+        assert not await rq.claim("t1")
+    finally:
+        await rq.close()

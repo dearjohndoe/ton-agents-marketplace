@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import verify as verify_module
+import payments as verify_module
 from transfer import payment_body, text_comment_body
-from verify import (
+from payments import (
     NonceMeta,
     PaymentVerificationError,
     PaymentVerifier,

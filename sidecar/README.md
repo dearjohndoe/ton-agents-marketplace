@@ -97,8 +97,7 @@ AGENT_COMMAND=python agent.py
 AGENT_CAPABILITY=translate
 AGENT_NAME=My Translator
 AGENT_DESCRIPTION=Translates text to any language
-AGENT_PRICE=10000000        # in nanotons (0.01 TON); omit or set 0 to disable TON rail
-AGENT_PRICE_USD=1000000     # in micro-USDT (1 000 000 = 1 USDT); omit to disable USDT rail
+AGENT_SKUS=default:infinite:ton=10000000:usd=1000000   # see "SKUs" below
 AGENT_ENDPOINT=https://my-agent.example.com
 AGENT_WALLET_PK=<private key>
 REGISTRY_ADDRESS=<registry contract address>
@@ -115,6 +114,38 @@ AGENT_AVATAR_URL=https://my-agent.example.com/images/avatar.png
 AGENT_IMAGES=https://my-agent.example.com/images/1.png,https://my-agent.example.com/images/2.png
 IMAGES_DIR=images           # local folder served at GET /images/{file}
 ```
+
+### SKUs
+
+`AGENT_SKUS` defines what your agent sells. One agent has one capability but
+can offer N SKUs at different prices and stock levels. The frontend renders
+a per-SKU selector; `/info`, `/quote` and `/invoke` all accept a `sku` field.
+
+Format: `sku_id:stock:<price_spec>[, ...]` where `<price_spec>` is any
+combination of `ton=<nanotons>` and/or `usd=<micro-usdt>` joined with `:`.
+At least one rail is required per SKU, and **all SKUs must support the same
+set of rails** (mixing TON-only and USDT-only SKUs is rejected at startup).
+
+```env
+# Single SKU (typical case)
+AGENT_SKUS=default:infinite:ton=10000000:usd=1000000
+
+# Multiple SKUs with stock and titles
+AGENT_SKUS=basic:10:ton=1000000000:usd=1500000,premium:3:ton=5000000000:usd=7000000
+AGENT_SKU_TITLES=basic=Basic account,premium=Premium lvl 50
+```
+
+Stock: an integer is the initial inventory (decremented on each sale);
+`infinite` (or empty) disables stock tracking.
+
+Dynamic pricing: set `ton=0` and/or `usd=0` — the sidecar will call the agent
+in `mode=prices` to fetch the current price at request time (used for SKUs
+whose price depends on external state).
+
+**Legacy fallback:** if `AGENT_SKUS` is absent, the sidecar synthesizes a
+single `default` SKU from `AGENT_PRICE` (nanoTON) and/or `AGENT_PRICE_USD`
+(micro-USDT), with optional `AGENT_STOCK`. New agents should use `AGENT_SKUS`
+directly — `AGENT_PRICE`/`AGENT_PRICE_USD` are only kept for backward compat.
 
 ### Images
 

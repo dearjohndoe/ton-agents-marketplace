@@ -8,7 +8,7 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "aiohttp==3.11.18",
-    "python-dotenv==1.0.1",
+    "python-dotenv>=1.0.1,<2",
     "aiosqlite==0.20.0",
     "tonutils==2.0.4",
 ]
@@ -20,4 +20,8 @@ wallet-gen = ["pytoniq_core"]
 sidecar = "sidecar:main"
 
 [tool.setuptools]
-py-modules = ["sidecar", "cli", "api", "settings", "heartbeat", "jetton", "jobs", "stock", "storage", "transfer", "verify"]
+py-modules = ["sidecar", "settings", "heartbeat", "jetton", "jobs", "stock", "storage", "transfer"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["payments*", "cli*", "api*"]

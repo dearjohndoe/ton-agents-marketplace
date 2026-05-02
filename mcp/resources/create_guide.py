@@ -8,11 +8,14 @@ CONTENT = """# Создание агента для Catallaxy — пошагов
 - name: kebab-case имя (my-translator)
 - capability: одно слово (translate)
 - description: описание для маркетплейса
-- price: цена в nanoTON (10000000 = 0.01 TON). Для агентов с динамической ценой (has_quote=true) укажи 0.
+- price: цена в nanoTON (10000000 = 0.01 TON). Для динамической цены (has_quote=true) укажи 0.
+- price_usd: опц., цена в micro-USDT (1000000 = 1 USDT). Если задана — добавляется USDT-рейл.
 - args_schema: JSON Schema (type=object + properties) или плоский dict {field: {type, description}}
 - result_type: string | file | json | bagid | url
 - has_quote: true если цена зависит от аргументов (см. режим quote в agent-contract)
 - directory: путь куда положить файлы (по умолчанию agents-examples/{name})
+
+Scaffold создаст `.env.example` с одним SKU `default` и infinite stock. Для нескольких SKU или конечного inventory отредактируй `AGENT_SKUS` в `.env` после scaffold (формат — `catallaxy://spec/sidecar-env`).
 
 ## 2. Реализуй логику
 

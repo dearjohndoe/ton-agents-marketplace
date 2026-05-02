@@ -12,114 +12,19 @@
  * uploads, rate limiting. Those are stubbed (txs trusted, refund tx faked).
  */
 
-export type AgentBehavior =
-  | { kind: 'success'; result: any; delayMs?: number }
-  | { kind: 'error'; message: string; delayMs?: number }
-  | { kind: 'out_of_stock'; reason: string; delayMs?: number }
-  | { kind: 'timeout'; delayMs?: number } // never finishes
-
-export interface SkuFixture {
-  id: string
-  title?: string
-  priceTon?: number
-  priceUsdt?: number
-  initialStock: number | null // null = infinite
-}
-
-export interface SidecarFixture {
-  sidecarId: string
-  endpoint: string
-  agent: {
-    address: string
-    wallet?: string
-    name: string
-    description: string
-    capabilities: string[]
-    argsSchema: Record<string, any>
-    resultSchema?: any
-    hasQuote?: boolean
-    previewUrl?: string
-    avatarUrl?: string
-    images?: string[]
-  }
-  paymentRails: Array<'TON' | 'USDT'>
-  behavior: (req: { skuId: string; body: any; nonce: string }) => AgentBehavior
-  quotePrice?: (req: { skuId: string; body: any }) => {
-    price: number
-    price_usdt?: number
-    plan?: any
-    note?: string
-    ttl?: number
-  }
-  skus: SkuFixture[]
-}
-
-interface SkuState {
-  id: string
-  title?: string
-  priceTon?: number
-  priceUsdt?: number
-  total: number | null
-  sold: number
-}
-
-interface Reservation {
-  key: string
-  skuId: string
-  expiresAt: number
-  jobId?: string
-}
-
-interface QuoteEntry {
-  quoteId: string
-  skuId: string
-  price: number
-  priceUsdt?: number
-  expiresAt: number
-  plan?: any
-  note?: string
-}
-
-interface JobRecord {
-  jobId: string
-  reservationKey: string
-  finishAt: number
-  outcome: AgentBehavior
-  result?: any
-  status: 'pending' | 'done' | 'error' | 'refunded_out_of_stock'
-  error?: string
-  reason?: string
-  refundTx?: string
-}
-
-const PAYMENT_TIMEOUT_MS = 60_000
-const QUOTE_TTL_MS = 120_000
-const FAKE_REFUND_TX = () => 'mockrefund_' + Math.random().toString(16).slice(2, 10)
-const PERSIST_KEY = 'mock-backend-state-v1'
-
-interface PersistedSkuState {
-  id: string
-  total: number | null
-  sold: number
-}
-interface PersistedAgentState {
-  sidecarId: string
-  skus: PersistedSkuState[]
-}
-
-function readPersisted(): Record<string, PersistedAgentState> {
-  if (typeof localStorage === 'undefined') return {}
-  try {
-    const raw = localStorage.getItem(PERSIST_KEY)
-    if (!raw) return {}
-    return JSON.parse(raw)
-  } catch { return {} }
-}
-
-function writePersisted(map: Record<string, PersistedAgentState>) {
-  if (typeof localStorage === 'undefined') return
-  try { localStorage.setItem(PERSIST_KEY, JSON.stringify(map)) } catch {}
-}
+import type {
+  SidecarFixture,
+  SkuState,
+  Reservation,
+  QuoteEntry,
+  JobRecord,
+  PersistedAgentState,
+} from './types'
+import {
+  PAYMENT_TIMEOUT_MS,
+  QUOTE_TTL_MS,
+  FAKE_REFUND_TX,
+} from './constants'
 
 export class AgentState {
   fx: SidecarFixture
@@ -458,7 +363,17 @@ export class AgentState {
         if (s && s.total != null) s.total = Math.max(0, s.total - 1)
       }
       this.reservations.delete(job.reservationKey)
-      job.status = 'refunded_out_of_stock'
+      job.status = 'refunded'
+      job.reasonCode = 'out_of_stock'
+      job.reason = o.reason
+      job.refundTx = FAKE_REFUND_TX()
+      this.onPersist?.()
+      return
+    }
+    if (o.kind === 'refunded') {
+      this.reservations.delete(job.reservationKey)
+      job.status = 'refunded'
+      job.reasonCode = o.reasonCode
       job.reason = o.reason
       job.refundTx = FAKE_REFUND_TX()
       this.onPersist?.()
@@ -468,60 +383,15 @@ export class AgentState {
 
   private _jobResponse(job: JobRecord) {
     if (job.status === 'done') return { job_id: job.jobId, status: 'done', result: job.result }
-    if (job.status === 'refunded_out_of_stock')
+    if (job.status === 'refunded')
       return {
         job_id: job.jobId,
-        status: 'refunded_out_of_stock',
+        status: 'refunded',
+        reason_code: job.reasonCode,
         reason: job.reason,
         refund_tx: job.refundTx,
       }
     if (job.status === 'error') return { job_id: job.jobId, status: 'error', error: job.error }
     return { job_id: job.jobId, status: 'pending' }
-  }
-}
-
-export class MockSidecarBackend {
-  private byEndpoint = new Map<string, AgentState>()
-  private fixtures: SidecarFixture[]
-
-  constructor(fixtures: SidecarFixture[]) {
-    this.fixtures = fixtures
-    const persisted = readPersisted()
-    const onPersist = () => this.persist()
-    for (const fx of fixtures) {
-      const state = new AgentState(fx, onPersist)
-      const snapshot = persisted[fx.sidecarId]
-      if (snapshot) state.hydrate(snapshot)
-      this.byEndpoint.set(fx.endpoint, state)
-    }
-  }
-
-  private persist() {
-    const map: Record<string, PersistedAgentState> = {}
-    for (const a of this.byEndpoint.values()) map[a.fx.sidecarId] = a.serialize()
-    writePersisted(map)
-  }
-
-  resolve(url: string): AgentState | null {
-    try {
-      const u = new URL(url)
-      const origin = `${u.protocol}//${u.host}`
-      return this.byEndpoint.get(origin) ?? null
-    } catch {
-      return null
-    }
-  }
-
-  resolveByEndpoint(endpoint: string): AgentState | null {
-    return this.byEndpoint.get(endpoint) ?? null
-  }
-
-  list() { return [...this.byEndpoint.values()] }
-  fixturesList() { return this.fixtures }
-  reset() {
-    for (const a of this.byEndpoint.values()) a.reset()
-    if (typeof localStorage !== 'undefined') {
-      try { localStorage.removeItem(PERSIST_KEY) } catch {}
-    }
   }
 }

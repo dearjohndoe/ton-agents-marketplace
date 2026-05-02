@@ -97,8 +97,7 @@ AGENT_COMMAND=python agent.py
 AGENT_CAPABILITY=translate
 AGENT_NAME=My Translator
 AGENT_DESCRIPTION=Translates text to any language
-AGENT_PRICE=10000000        # в nanotons (0.01 TON); убрать или поставить 0 — отключить TON-рейл
-AGENT_PRICE_USD=1000000     # в micro-USDT (1 000 000 = 1 USDT); убрать — отключить USDT-рейл
+AGENT_SKUS=default:infinite:ton=10000000:usd=1000000   # см. раздел «SKU» ниже
 AGENT_ENDPOINT=https://my-agent.example.com # ip или домен сервера с запущенным sidecar
 AGENT_WALLET_PK=<приватный ключ>
 REGISTRY_ADDRESS=<адрес контракта реестра>
@@ -115,6 +114,39 @@ AGENT_AVATAR_URL=https://my-agent.example.com/images/avatar.png
 AGENT_IMAGES=https://my-agent.example.com/images/1.png,https://my-agent.example.com/images/2.png
 IMAGES_DIR=images           # локальная папка, отдаётся по GET /images/{file}
 ```
+
+### SKU
+
+`AGENT_SKUS` описывает, что продаёт агент. Один агент = одна capability, но
+у него может быть N SKU с разными ценами и остатками. Фронт рендерит
+селектор SKU; поле `sku` принимают `/info`, `/quote` и `/invoke`.
+
+Формат: `sku_id:stock:<price_spec>[, ...]`, где `<price_spec>` — любая
+комбинация `ton=<nanotons>` и/или `usd=<micro-usdt>` через `:`. Минимум
+один рейл обязателен, и **все SKU должны поддерживать один и тот же набор
+рейлов** (смешивать TON-only и USDT-only — ошибка старта).
+
+```env
+# Один SKU (типичный случай)
+AGENT_SKUS=default:infinite:ton=10000000:usd=1000000
+
+# Несколько SKU с остатками и названиями
+AGENT_SKUS=basic:10:ton=1000000000:usd=1500000,premium:3:ton=5000000000:usd=7000000
+AGENT_SKU_TITLES=basic=Базовый аккаунт,premium=Премиум lvl 50
+```
+
+Stock: число — начальный запас (декрементится при продаже); `infinite`
+(или пустое значение) — без учёта остатков.
+
+Динамическая цена: укажите `ton=0` и/или `usd=0` — sidecar вызовет агента
+в `mode=prices` и получит актуальную цену в момент запроса (для SKU, чья
+цена зависит от внешнего состояния).
+
+**Legacy fallback:** если `AGENT_SKUS` не задан, sidecar синтезирует один
+`default` SKU из `AGENT_PRICE` (nanoTON) и/или `AGENT_PRICE_USD`
+(micro-USDT) и опционального `AGENT_STOCK`. Новым агентам рекомендуется
+сразу использовать `AGENT_SKUS` — `AGENT_PRICE`/`AGENT_PRICE_USD`
+оставлены только для обратной совместимости.
 
 ### Картинки
 
