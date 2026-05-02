@@ -18,6 +18,7 @@ import { ShareButton } from './ShareButton'
 import { CopyButton } from './CopyButton'
 import { InputFields } from './InputFields'
 import { SkuSelector } from './SkuSelector'
+import { RailSelector } from './RailSelector'
 import { StockBadge } from './StockBadge'
 import { RefundedBlock } from './RefundedBlock'
 import { friendlyAddr, formatAddr, nanoToTon, microToUsdt } from './utils'
@@ -47,6 +48,7 @@ export function AgentItem({ agent, expanded, onToggle, locked }: Props) {
   const fieldsDisabled = call.busy || (agent.hasQuote === true && call.status === 'quoted')
   const skuTon = call.selectedSku?.priceTon ?? agent.price
   const skuUsdt = call.selectedSku?.priceUsdt ?? agent.priceUsdt
+  const quoteUsdt = call.quote?.priceUsdt ?? skuUsdt
   const selectedSoldOut = call.selectedSku?.stockLeft != null && call.selectedSku.stockLeft <= 0
   const submitDisabled = call.busy || online === false || selectedSoldOut
 
@@ -205,7 +207,7 @@ export function AgentItem({ agent, expanded, onToggle, locked }: Props) {
                     <div className="quote-note">{call.quote.note}</div>
                   )}
                   <div className="quote-meta">
-                    <span className="quote-price">{nanoToTon(call.quote.price)} TON{skuUsdt ? ` / ${microToUsdt(skuUsdt)} USDT` : ''}</span>
+                    <span className="quote-price">{nanoToTon(call.quote.price)} TON{quoteUsdt ? ` / ${microToUsdt(quoteUsdt)} USDT` : ''}</span>
                     <span className={`quote-timer ${call.quoteSecondsLeft === 0 ? 'quote-timer--expired' : ''}`}>
                       {call.quoteSecondsLeft > 0 ? `Expires in ${call.quoteSecondsLeft}s` : 'Quote expired'}
                     </span>
@@ -224,14 +226,20 @@ export function AgentItem({ agent, expanded, onToggle, locked }: Props) {
 
               {inQuoteFlow ? (
                 <div className="quote-actions">
+                  <RailSelector
+                    rails={call.paymentRails}
+                    selected={call.selectedRail}
+                    onSelect={call.setSelectedRail}
+                    disabled={call.busy}
+                  />
                   <button type="submit" className="btn btn-primary" disabled={submitDisabled || call.quoteSecondsLeft === 0}>
                     {call.status === 'paying' ? 'Waiting for payment…'
                       : call.status === 'invoking' ? 'Calling agent…'
                       : call.status === 'polling' ? 'Waiting for result…'
                       : call.quoteSecondsLeft === 0 ? 'Quote expired'
                       : selectedSoldOut ? 'Sold out'
-                      : call.selectedRail === 'USDT' && skuUsdt
-                        ? `Approve & Pay ${microToUsdt(skuUsdt)} USDT`
+                      : call.selectedRail === 'USDT' && quoteUsdt
+                        ? `Approve & Pay ${microToUsdt(quoteUsdt)} USDT`
                         : `Approve & Pay ${nanoToTon(call.quote!.price)} TON`}
                   </button>
                   <button type="button" className="btn btn-outline btn-sm" onClick={() => call.resetQuote()}>
@@ -246,24 +254,12 @@ export function AgentItem({ agent, expanded, onToggle, locked }: Props) {
                 </button>
               ) : (
                 <>
-                  {call.paymentRails.includes('TON') && call.paymentRails.includes('USDT') && (
-                    <div className="rail-selector">
-                      <label className="rail-option">
-                        <input type="radio" name="rail" value="TON"
-                          checked={call.selectedRail === 'TON'}
-                          onChange={() => call.setSelectedRail('TON')}
-                          disabled={call.busy} />
-                        <span>TON</span>
-                      </label>
-                      <label className="rail-option">
-                        <input type="radio" name="rail" value="USDT"
-                          checked={call.selectedRail === 'USDT'}
-                          onChange={() => call.setSelectedRail('USDT')}
-                          disabled={call.busy} />
-                        <span>USDT</span>
-                      </label>
-                    </div>
-                  )}
+                  <RailSelector
+                    rails={call.paymentRails}
+                    selected={call.selectedRail}
+                    onSelect={call.setSelectedRail}
+                    disabled={call.busy}
+                  />
                   <button type="submit" className="btn btn-primary" disabled={submitDisabled}>
                     {call.status === 'paying' ? 'Waiting for payment…'
                       : call.status === 'invoking' ? 'Calling agent…'

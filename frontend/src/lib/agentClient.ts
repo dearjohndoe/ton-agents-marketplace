@@ -199,6 +199,7 @@ export interface QuotePlan {
 export interface QuoteResult {
   quoteId: string
   price: number
+  priceUsdt: number | null
   plan: QuotePlan | string | null
   expiresAt: number
   note: string | null
@@ -216,6 +217,7 @@ export async function fetchQuote(
   return {
     quoteId: data.quote_id,
     price: data.price,
+    priceUsdt: typeof data.price_usdt === 'number' ? data.price_usdt : null,
     plan: data.plan,
     expiresAt: data.expires_at,
     note: data.note ?? null,
