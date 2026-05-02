@@ -61,6 +61,8 @@ def make_settings(tmp_path: Path, **overrides) -> Settings:
         stock_db_path=str(tmp_path / "stock.db"),
         enforce_comment_nonce=True,
         refund_fee_nanoton=500_000,
+        refund_worker_interval=60,
+        refund_max_attempts=10,
         agent_price_usdt=agent_price_usdt,
         has_quote=False,
         rate_limit_requests=3,

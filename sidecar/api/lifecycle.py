@@ -9,6 +9,7 @@ from heartbeat import HeartbeatConfig, HeartbeatManager
 
 from api.constants import DESCRIBE_TIMEOUT
 from api.describe import fetch_describe
+from api.domain.refund_worker import refund_worker_loop
 
 if TYPE_CHECKING:
     from api.app import SidecarApp
@@ -80,11 +81,20 @@ async def startup(app: "SidecarApp") -> None:
             logger.exception("JettonPaymentVerifier failed to start")
 
     try:
+        await app.refund_queue.init()
+    except Exception:
+        logger.exception("RefundQueue.init failed")
+
+    try:
         await app.heartbeat.send_if_needed(force=False)
     except Exception:
         logger.exception("Initial heartbeat failed")
 
-    for task_coro in [app.heartbeat.loop(app.stop_event), app.cleanup_loop()]:
+    for task_coro in [
+        app.heartbeat.loop(app.stop_event),
+        app.cleanup_loop(),
+        refund_worker_loop(app),
+    ]:
         task = asyncio.create_task(task_coro)
         task.add_done_callback(_silent_exception_handler)
         app.background_tasks.append(task)
@@ -101,3 +111,4 @@ async def shutdown(app: "SidecarApp") -> None:
         await app.jetton_verifier.close()
     await app.tx_store.close()
     await app.stock.close()
+    await app.refund_queue.close()

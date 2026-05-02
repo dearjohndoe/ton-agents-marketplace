@@ -12,7 +12,7 @@ from heartbeat import HeartbeatConfig, HeartbeatManager
 from jobs import JobStore
 from storage import StateStore
 from transfer import TransferSender
-from payments import PaymentVerifier, JettonPaymentVerifier, ProcessedTxStore
+from payments import PaymentVerifier, JettonPaymentVerifier, ProcessedTxStore, RefundQueue
 from jetton import USDT_MASTER_MAINNET, USDT_MASTER_TESTNET
 from settings import Settings, AgentSku, DEFAULT_SKU_ID  # noqa: F401 — re-exported via api package
 from stock import StockStore
@@ -65,6 +65,7 @@ class SidecarApp:
         )
         self.jetton_verifier: JettonPaymentVerifier | None = None
         self._agent_jetton_wallet: str | None = None
+        self._jetton_init_lock = asyncio.Lock()
         if any(s.price_usd is not None for s in settings.skus):
             usdt_master = USDT_MASTER_TESTNET if settings.testnet else USDT_MASTER_MAINNET
             self.jetton_verifier = JettonPaymentVerifier(
@@ -74,6 +75,10 @@ class SidecarApp:
                 payment_timeout_seconds=settings.payment_timeout,
                 testnet=settings.testnet,
             )
+        # Refund queue lives in the same SQLite file as ProcessedTxStore — they
+        # already share per-agent scoping via tx_db_path and SQLite handles the
+        # two connections fine. One env var, one file to back up.
+        self.refund_queue = RefundQueue(settings.tx_db_path)
         self.stop_event = asyncio.Event()
         self.sidecar_id: str = ""
         # Dynamic pricing cache (populated via agent mode=prices when SKU price==0)
@@ -116,6 +121,36 @@ class SidecarApp:
             reason=reason,
             rail=rail,
         )
+
+    async def ensure_jetton_verifier(self) -> bool:
+        """Lazy-bootstrap the jetton verifier. Idempotent and concurrency-safe.
+
+        Used both by the /invoke handler (when verifier was missing at startup)
+        and by the refund worker (to recover sender/amount for a queued tx).
+        Returns True iff the verifier is started and the agent's jetton wallet
+        address is known.
+        """
+        if self._agent_jetton_wallet and self.jetton_verifier is not None:
+            return True
+        async with self._jetton_init_lock:
+            if self._agent_jetton_wallet and self.jetton_verifier is not None:
+                return True
+            if self.jetton_verifier is None:
+                usdt_master = USDT_MASTER_TESTNET if self.settings.testnet else USDT_MASTER_MAINNET
+                self.jetton_verifier = JettonPaymentVerifier(
+                    agent_wallet=self.settings.agent_wallet,
+                    usdt_master=usdt_master,
+                    min_amount=self.settings.agent_price_usdt or 0,
+                    payment_timeout_seconds=self.settings.payment_timeout,
+                    testnet=self.settings.testnet,
+                )
+            try:
+                await self.jetton_verifier.start()
+                self._agent_jetton_wallet = self.jetton_verifier.jetton_wallet_address
+                return True
+            except Exception:
+                logger.exception("ensure_jetton_verifier: start() failed")
+                return False
 
     async def startup(self) -> None:
         await _startup(self)

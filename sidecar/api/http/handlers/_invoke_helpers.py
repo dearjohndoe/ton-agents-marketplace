@@ -87,14 +87,32 @@ async def verify_payment(
     """Run the right verifier (TON or USDT). Unlocks the quote on every error path."""
     try:
         if parsed.rail == "USDT":
-            if not sidecar.jetton_verifier:
-                unlock_quote(parsed.quote_id, sidecar)
-                logger.critical(
-                    "USDT payment received but jetton_verifier is not configured — "
-                    "tx=%s nonce=%s — payment requires manual refund",
-                    parsed.tx_hash, parsed.nonce,
-                )
-                return web.json_response({"error": "USDT payments not configured"}, status=400)
+            if not sidecar.jetton_verifier or not sidecar._agent_jetton_wallet:
+                # Try to bootstrap on the fly — covers both startup misconfig
+                # (verifier never created) and transient liteserver outage
+                # (start() failed at boot).
+                bootstrapped = await sidecar.ensure_jetton_verifier()
+                if not bootstrapped:
+                    await sidecar.refund_queue.enqueue(
+                        tx_hash=parsed.tx_hash,
+                        nonce=parsed.nonce,
+                        rail="USDT",
+                        sku_id=sku.sku_id,
+                    )
+                    unlock_quote(parsed.quote_id, sidecar)
+                    logger.warning(
+                        "USDT payment received but jetton_verifier unavailable — "
+                        "queued for background refund tx=%s nonce=%s",
+                        parsed.tx_hash, parsed.nonce,
+                    )
+                    return web.json_response(
+                        {
+                            "error": "USDT verifier temporarily unavailable; payment queued for refund",
+                            "refund_pending": True,
+                            "tx": parsed.tx_hash,
+                        },
+                        status=503,
+                    )
             if min_usdt == 0:
                 unlock_quote(parsed.quote_id, sidecar)
                 return web.json_response(
@@ -103,6 +121,12 @@ async def verify_payment(
                 )
             return await sidecar.jetton_verifier.verify(
                 tx_hash=parsed.tx_hash, raw_nonce=parsed.nonce, min_amount=min_usdt,
+            )
+        if min_ton == 0:
+            unlock_quote(parsed.quote_id, sidecar)
+            return web.json_response(
+                {"error": "TON price unavailable for this SKU", "sku": sku.sku_id},
+                status=503,
             )
         return await sidecar.verifier.verify(
             tx_hash=parsed.tx_hash, raw_nonce=parsed.nonce, min_amount=min_ton,

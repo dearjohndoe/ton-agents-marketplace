@@ -178,6 +178,29 @@ async def handle_invoke(request: web.Request, sidecar: "SidecarApp") -> web.Resp
             unlock_quote(parsed.quote_id, sidecar)
             return web.json_response({"error": "Transaction already used"}, status=409)
 
+        # Block reprocessing of any tx that's already routed to the refund queue.
+        # Without this, a /invoke retry could race the refund worker and
+        # double-spend the same payment (consume service AND refund).
+        pending = await sidecar.refund_queue.get(parsed.tx_hash)
+        if pending is not None:
+            unlock_quote(parsed.quote_id, sidecar)
+            if pending.status == "refunded":
+                return web.json_response(
+                    {"error": "Transaction already refunded", "refund_tx": pending.refund_tx},
+                    status=410,
+                )
+            if pending.status in ("pending", "refunding"):
+                return web.json_response(
+                    {"error": "Transaction is queued for refund, do not retry",
+                     "refund_pending": True}, status=409,
+                )
+            if pending.status == "failed":
+                return web.json_response(
+                    {"error": "Transaction refund failed permanently — contact support",
+                     "last_error": pending.last_error}, status=410,
+                )
+            # 'processed' falls through — should not happen unless racy
+
         verified = await verify_payment(parsed, sku, sidecar, min_ton, min_usdt)
         if isinstance(verified, web.Response):
             return verified

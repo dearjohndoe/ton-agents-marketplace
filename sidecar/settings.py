@@ -37,6 +37,8 @@ class Settings:
     stock_db_path: str
     enforce_comment_nonce: bool
     refund_fee_nanoton: int
+    refund_worker_interval: int
+    refund_max_attempts: int
     agent_price_usdt: int | None
     has_quote: bool
     rate_limit_requests: int
@@ -263,6 +265,8 @@ def load_settings(env_file: str | None = None) -> Settings:
         stock_db_path=os.getenv("SIDECAR_STOCK_DB_PATH", "stock.db"),
         enforce_comment_nonce=_env_bool("ENFORCE_COMMENT_NONCE", True),
         refund_fee_nanoton=int(os.getenv("REFUND_FEE_NANOTON", "500000")),
+        refund_worker_interval=int(os.getenv("REFUND_WORKER_INTERVAL_SECONDS", "60")),
+        refund_max_attempts=int(os.getenv("REFUND_MAX_ATTEMPTS", "10")),
         agent_price_usdt=agent_price_usdt,
         has_quote=_env_bool("AGENT_HAS_QUOTE", False),
         rate_limit_requests=int(os.getenv("RATE_LIMIT_REQUESTS", "60")),
