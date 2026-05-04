@@ -55,6 +55,7 @@ async def startup(app: "SidecarApp") -> None:
             preview_url=app.settings.agent_preview_url,
             avatar_url=app.settings.agent_avatar_url,
             images=app.settings.agent_images,
+            owner_wallet=app.settings.owner_wallet,
         ),
         state_store=app.state_store,
         transfer_sender=app.sender.send,
