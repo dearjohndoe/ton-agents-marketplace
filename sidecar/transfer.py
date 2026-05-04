@@ -10,6 +10,7 @@ from pytoniq_core import Cell, begin_cell
 from tonutils.clients import LiteBalancer
 from tonutils.contracts.wallet import WalletV4R2
 from tonutils.types import NetworkGlobalID, PrivateKey
+from tonutils.utils import normalize_hash
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,9 @@ def text_comment_body(text: str) -> Cell:
 
 SEND_MAX_RETRIES = 3
 SEND_RETRY_DELAYS = [0.5, 2, 5]  # seconds between retries
+SEND_TOTAL_BUDGET_SEC = 30
+CONFIRM_TIMEOUT_SEC = 10
+CONFIRM_POLL_INTERVAL_SEC = 1
 
 
 class TransferSender:
@@ -90,13 +94,50 @@ class TransferSender:
             self._wallet = None
         await self._ensure_initialized()
 
+    async def _find_landed_hash(self, target_hashes: set[str]) -> str | None:
+        """Look up wallet's recent transactions and return any of `target_hashes`
+        whose external-in message was actually included on chain."""
+        if not self._client or not self._wallet:
+            return None
+        try:
+            txs = await self._client.get_transactions(self._wallet.address, limit=10)
+        except Exception as exc:
+            logger.debug("get_transactions failed during confirmation poll: %s", exc)
+            return None
+        for tx in txs:
+            if tx.in_msg is None or not tx.in_msg.is_external:
+                continue
+            try:
+                h = normalize_hash(tx.in_msg)
+            except Exception:
+                continue
+            if h in target_hashes:
+                return h
+        return None
+
     async def send(self, destination: str, amount: int, body: Cell) -> str:
         async with self._lock:
+            loop = asyncio.get_event_loop()
+            deadline = loop.time() + SEND_TOTAL_BUDGET_SEC
             last_exc: Exception | None = None
+            submitted_hashes: set[str] = set()
+
             for attempt in range(SEND_MAX_RETRIES):
                 try:
                     await self._ensure_initialized()
                     assert self._wallet is not None
+
+                    # Before sending again, check if a prior attempt's message
+                    # landed on chain (avoids double-send when confirmation
+                    # poll merely timed out).
+                    if submitted_hashes:
+                        landed = await self._find_landed_hash(submitted_hashes)
+                        if landed:
+                            logger.info(
+                                "Transfer confirmed before retry: hash=%s", landed,
+                            )
+                            return landed
+
                     msg = await self._wallet.transfer(
                         destination=destination,
                         amount=amount,
@@ -104,28 +145,50 @@ class TransferSender:
                         bounce=False,
                     )
                     tx_hash = msg.normalized_hash
+                    submitted_hashes.add(tx_hash)
                     logger.info(
-                        "Transfer sent: hash=%s dest=%s amount=%d",
-                        tx_hash,
-                        destination,
-                        amount,
+                        "Transfer submitted: hash=%s dest=%s amount=%d (awaiting confirmation)",
+                        tx_hash, destination, amount,
                     )
-                    return tx_hash
+
+                    confirm_until = min(loop.time() + CONFIRM_TIMEOUT_SEC, deadline)
+                    while loop.time() < confirm_until:
+                        await asyncio.sleep(CONFIRM_POLL_INTERVAL_SEC)
+                        landed = await self._find_landed_hash(submitted_hashes)
+                        if landed:
+                            logger.info("Transfer confirmed: hash=%s", landed)
+                            return landed
+
+                    last_exc = TimeoutError(
+                        f"transfer not confirmed within {CONFIRM_TIMEOUT_SEC}s: hash={tx_hash}"
+                    )
+                    logger.warning(
+                        "Transfer not confirmed (attempt %d/%d): hash=%s",
+                        attempt + 1, SEND_MAX_RETRIES, tx_hash,
+                    )
                 except Exception as exc:
                     last_exc = exc
-                    if attempt >= SEND_MAX_RETRIES - 1:
-                        logger.warning(
-                            "Transfer attempt %d/%d failed (dest=%s amount=%d): %s",
-                            attempt + 1, SEND_MAX_RETRIES, destination, amount, exc,
-                        )
-                        break
-                    delay = SEND_RETRY_DELAYS[min(attempt, len(SEND_RETRY_DELAYS) - 1)]
                     logger.warning(
-                        "Transfer attempt %d/%d failed (dest=%s amount=%d): %s. Retrying in %ds",
-                        attempt + 1, SEND_MAX_RETRIES, destination, amount, exc, delay,
+                        "Transfer attempt %d/%d failed (dest=%s amount=%d): %s",
+                        attempt + 1, SEND_MAX_RETRIES, destination, amount, exc,
                     )
-                    await self._reconnect()
-                    await asyncio.sleep(delay)
+
+                if attempt >= SEND_MAX_RETRIES - 1:
+                    break
+                delay = SEND_RETRY_DELAYS[min(attempt, len(SEND_RETRY_DELAYS) - 1)]
+                if loop.time() + delay >= deadline:
+                    logger.warning("Send budget exhausted, no more retries")
+                    break
+                await self._reconnect()
+                await asyncio.sleep(delay)
+
+            # Final check before giving up: maybe one of our submissions landed
+            # in the gap between last poll and now.
+            if submitted_hashes:
+                landed = await self._find_landed_hash(submitted_hashes)
+                if landed:
+                    logger.info("Transfer confirmed on final check: hash=%s", landed)
+                    return landed
 
             logger.error(
                 "Transfer failed after %d attempts: dest=%s amount=%d",
