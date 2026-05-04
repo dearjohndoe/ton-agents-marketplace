@@ -50,6 +50,7 @@ class Settings:
     agent_preview_url: str | None
     agent_avatar_url: str | None
     agent_images: tuple[str, ...]
+    owner_wallet: str | None
     skus: tuple[AgentSku, ...]
     payment_rails: tuple[str, ...]
 
@@ -290,6 +291,7 @@ def load_settings(env_file: str | None = None) -> Settings:
         agent_images=tuple(
             u.strip() for u in os.getenv("AGENT_IMAGES", "").split(",") if u.strip()
         ),
+        owner_wallet=os.getenv("OWNER_WALLET") or None,
         skus=skus,
         payment_rails=tuple(rails),
     )

@@ -54,6 +54,7 @@ class HeartbeatConfig:
     preview_url: str | None = None
     avatar_url: str | None = None
     images: tuple[str, ...] = field(default_factory=tuple)
+    owner_wallet: str | None = None
 
 
 class HeartbeatManager:
@@ -88,6 +89,8 @@ class HeartbeatManager:
             payload["sidecar_id"] = self._config.sidecar_id
         if self._config.result_schema:
             payload["result_schema"] = self._config.result_schema
+        if self._config.owner_wallet:
+            payload["owner_wallet"] = self._config.owner_wallet
 
         if self._config.preview_url:
             if _valid_image_url(self._config.preview_url):

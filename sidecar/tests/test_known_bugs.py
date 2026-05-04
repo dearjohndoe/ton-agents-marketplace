@@ -83,6 +83,7 @@ def _make_settings(tmp_path: Path, **overrides) -> Settings:
         agent_preview_url=None,
         agent_avatar_url=None,
         agent_images=(),
+        owner_wallet=None,
         skus=(default_sku,),
         payment_rails=tuple(rails),
     )

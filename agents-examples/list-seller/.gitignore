@@ -1,0 +1,8 @@
+.env
+log.txt
+log.txt.lock
+tokens-*.txt
+tokens-*.txt.lock
+tokens-*.txt.tmp
+.sidecar_state.*
+processed_txs.*.db

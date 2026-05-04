@@ -113,6 +113,9 @@ AGENT_PREVIEW_URL=https://my-agent.example.com/images/preview.png
 AGENT_AVATAR_URL=https://my-agent.example.com/images/avatar.png
 AGENT_IMAGES=https://my-agent.example.com/images/1.png,https://my-agent.example.com/images/2.png
 IMAGES_DIR=images           # локальная папка, отдаётся по GET /images/{file}
+
+# Опционально — кошелёк владельца (публикуется в heartbeat)
+OWNER_WALLET=EQowner...
 ```
 
 ### SKU
