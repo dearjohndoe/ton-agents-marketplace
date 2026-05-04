@@ -89,7 +89,12 @@ async def test_sender_send_success_first_attempt(sender, monkeypatch):
         self._client = MagicMock()
         self._wallet = wallet
 
+    async def fake_find(self, target_hashes):
+        return "HASH_OK" if "HASH_OK" in target_hashes else None
+
     monkeypatch.setattr(TransferSender, "_ensure_initialized", fake_init)
+    monkeypatch.setattr(TransferSender, "_find_landed_hash", fake_find)
+    monkeypatch.setattr(transfer_module, "CONFIRM_POLL_INTERVAL_SEC", 0)
 
     result = await sender.send("EQdestination", 1_000, MagicMock())
     assert result == "HASH_OK"
@@ -118,10 +123,15 @@ async def test_sender_send_retries_then_succeeds(sender, monkeypatch):
     async def fake_reconnect(self):
         await fake_init(self)
 
+    async def fake_find(self, target_hashes):
+        return "HASH_RETRY" if "HASH_RETRY" in target_hashes else None
+
     monkeypatch.setattr(TransferSender, "_ensure_initialized", fake_init)
     monkeypatch.setattr(TransferSender, "_reconnect", fake_reconnect)
+    monkeypatch.setattr(TransferSender, "_find_landed_hash", fake_find)
     # Speed up retry delays
     monkeypatch.setattr(transfer_module, "SEND_RETRY_DELAYS", [0, 0, 0])
+    monkeypatch.setattr(transfer_module, "CONFIRM_POLL_INTERVAL_SEC", 0)
 
     result = await sender.send("EQdest", 1_000, MagicMock())
     assert result == "HASH_RETRY"
@@ -137,10 +147,15 @@ async def test_sender_send_raises_after_max_retries(sender, monkeypatch):
         self._client.close = AsyncMock()
         self._wallet = wallet
 
+    async def fake_find(self, target_hashes):
+        return None  # nothing ever lands
+
     monkeypatch.setattr(TransferSender, "_ensure_initialized", fake_init)
     monkeypatch.setattr(TransferSender, "_reconnect", fake_init)
+    monkeypatch.setattr(TransferSender, "_find_landed_hash", fake_find)
     monkeypatch.setattr(transfer_module, "SEND_RETRY_DELAYS", [0, 0, 0])
     monkeypatch.setattr(transfer_module, "SEND_MAX_RETRIES", 3)
+    monkeypatch.setattr(transfer_module, "CONFIRM_POLL_INTERVAL_SEC", 0)
 
     with pytest.raises(ConnectionError, match="permanently broken"):
         await sender.send("EQdest", 1_000, MagicMock())
@@ -168,7 +183,13 @@ async def test_sender_send_is_serialized_by_lock(sender, monkeypatch):
         self._client = MagicMock()
         self._wallet = wallet
 
+    async def fake_find(self, target_hashes):
+        # Always confirm whatever was just submitted
+        return next(iter(target_hashes)) if target_hashes else None
+
     monkeypatch.setattr(TransferSender, "_ensure_initialized", fake_init)
+    monkeypatch.setattr(TransferSender, "_find_landed_hash", fake_find)
+    monkeypatch.setattr(transfer_module, "CONFIRM_POLL_INTERVAL_SEC", 0)
 
     await asyncio.gather(
         sender.send("EQa", 1, MagicMock()),
